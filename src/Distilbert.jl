@@ -330,13 +330,13 @@ function load_weights!(model::DistilBertModel, state_dict)
     end
 
     # 1. Embeddings
-    load_embedding!(model.embeddings.word_embeddings, "distilbert.embeddings.word_embeddings.weight")
-    load_embedding!(model.embeddings.position_embeddings, "distilbert.embeddings.position_embeddings.weight")
-    load_layernorm!(model.embeddings.LayerNorm, "distilbert.embeddings.LayerNorm")
+    load_embedding!(model.embeddings.word_embeddings, "embeddings.word_embeddings.weight")
+    load_embedding!(model.embeddings.position_embeddings, "embeddings.position_embeddings.weight")
+    load_layernorm!(model.embeddings.LayerNorm, "embeddings.LayerNorm")
 
     # 2. Transformer Blocks
     for i in 1:model.config.n_layers
-        layer_prefix = "distilbert.transformer.layer.$(i-1)"
+        layer_prefix = "transformer.layer.$(i-1)"
         block = model.transformer[i]
 
         load_dense!(block.attention.q_lin, "$layer_prefix.attention.q_lin")

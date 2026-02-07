@@ -1,12 +1,11 @@
-name = "Example"
-uuid = "7876af07-990d-54b4-ab0e-23690620f79a"
-version = "0.5.5"
+name = "Distilbert"
+uuid = "feade772-a77d-4a26-a31d-6c51722d33b3"
+authors = ["AbrJA <abraham.jaimes.mx@gmail.com>"]
+version = "0.1.0"
 
-[compat]
-julia = "1"
-
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test"]
+[deps]
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
+Pickle = "fbb45041-c46e-462f-888f-7c521cafbc2c"
+SafeTensors = "eeda0dda-7046-4914-a807-2495fc7abb89"

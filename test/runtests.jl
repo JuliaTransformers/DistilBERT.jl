@@ -1,4 +1,2 @@
-using Test, Example
+using Test, Distilbert
 
-@test hello("Julia") == "Hello, Julia"
-@test domath(2.0) ≈ 7.0

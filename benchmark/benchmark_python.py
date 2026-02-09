@@ -112,7 +112,7 @@ def run_benchmarks():
     print("3. MODEL FORWARD PASS (seq_len=32, batch=1)")
     print("-" * 60)
 
-    input_ids_single = torch.randint(0, 30522, (1, 32))
+    input_ids_single = torch.randint(0, tokenizer.vocab_size, (1, 32))
 
     with torch.no_grad():
         r = benchmark(lambda: model(input_ids_single), samples=20)
@@ -128,7 +128,7 @@ def run_benchmarks():
     print("4. MODEL FORWARD PASS (seq_len=128, batch=8)")
     print("-" * 60)
 
-    input_ids_batch = torch.randint(0, 30522, (8, 128))
+    input_ids_batch = torch.randint(0, tokenizer.vocab_size, (8, 128))
 
     with torch.no_grad():
         r = benchmark(lambda: model(input_ids_batch), samples=10)

@@ -72,7 +72,7 @@ function Embeddings(config::DistilBertConfig)
     )
 end
 
-function (m::Embeddings)(input_ids)
+function (m::Embeddings)(input_ids::AbstractMatrix{<:Integer})
     seq_length = size(input_ids, 1)
 
     words_embeddings = m.word_embeddings(input_ids) # (dim, seq_len, batch_size)
@@ -116,7 +116,7 @@ function MultiHeadSelfAttention(config::DistilBertConfig)
     )
 end
 
-function (m::MultiHeadSelfAttention)(x, mask=nothing)
+function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3}, mask::Union{Nothing,AbstractMatrix{<:Real}}=nothing)
     # x shape: (dim, seq_len, batch_size)
     dim, seq_len, batch_size = size(x)
 
@@ -190,7 +190,7 @@ function FeedForward(config::DistilBertConfig)
     )
 end
 
-function (m::FeedForward)(x)
+function (m::FeedForward)(x::AbstractArray{<:Real,3})
     return m.lin2(m.dropout(m.lin1(x)))
 end
 
@@ -213,7 +213,7 @@ function TransformerBlock(config::DistilBertConfig)
     )
 end
 
-function (m::TransformerBlock)(x, mask=nothing)
+function (m::TransformerBlock)(x::AbstractArray{<:Real,3}, mask::Union{Nothing,AbstractMatrix{<:Real}}=nothing)
     # Self-Attention
     sa_output = m.attention(x, mask)
     sa_output = m.sa_layer_norm(sa_output .+ x)
@@ -241,7 +241,7 @@ function DistilBertModel(config::DistilBertConfig)
     )
 end
 
-function (m::DistilBertModel)(input_ids; mask=nothing)
+function (m::DistilBertModel)(input_ids::AbstractMatrix{<:Integer}; mask::Union{Nothing,AbstractMatrix{<:Real}}=nothing)
     x = m.embeddings(input_ids)
 
     for block in m.transformer

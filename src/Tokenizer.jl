@@ -2,7 +2,7 @@ module Tokenizer
 
 using Unicode
 
-export WordPieceTokenizer, tokenize, encode, encode_batch, load_vocab
+export WordPieceTokenizer, tokenize, encode, encode_pair, encode_batch, load_vocab
 
 struct WordPieceTokenizer
     vocab::Dict{String,Int}
@@ -138,29 +138,134 @@ function tokenize(tokenizer::WordPieceTokenizer, text::String)
     return wordpiece_tokens
 end
 
-function encode(tokenizer::WordPieceTokenizer, text::String; max_length=nothing, pad_to_max_length=false)
+"""
+    encode(tokenizer, text; kwargs...) -> Vector{Int}
+
+Encode a single text to token IDs.
+
+# Keyword Arguments
+- `add_special_tokens::Bool=true`: Whether to add [CLS] and [SEP] tokens
+- `max_length::Union{Nothing,Int}=nothing`: Maximum sequence length
+- `truncation::Bool=false`: Whether to truncate sequences longer than max_length
+- `padding::Bool=false`: Whether to pad sequences to max_length
+
+# Returns
+- `Vector{Int}`: Token IDs
+"""
+function encode(tokenizer::WordPieceTokenizer, text::String;
+    add_special_tokens::Bool=true,
+    max_length::Union{Nothing,Int}=nothing,
+    truncation::Bool=false,
+    padding::Bool=false)
     tokens = tokenize(tokenizer, text)
 
     # Add special tokens
-    tokens = [tokenizer.cls_token; tokens; tokenizer.sep_token]
+    if add_special_tokens
+        tokens = [tokenizer.cls_token; tokens; tokenizer.sep_token]
+    end
 
     # Convert to IDs
     unk_id = get(tokenizer.vocab, tokenizer.unk_token, 0)
     ids = [get(tokenizer.vocab, t, unk_id) for t in tokens]
 
-    if max_length !== nothing
-        if length(ids) > max_length
+    # Handle truncation
+    if max_length !== nothing && truncation && length(ids) > max_length
+        if add_special_tokens
+            # Keep [SEP] at the end
             ids = ids[1:max_length-1]
             push!(ids, get(tokenizer.vocab, tokenizer.sep_token, 0))
-        elseif pad_to_max_length
-            pad_id = get(tokenizer.vocab, tokenizer.pad_token, 0)
-            while length(ids) < max_length
-                push!(ids, pad_id)
-            end
+        else
+            ids = ids[1:max_length]
+        end
+    end
+
+    # Handle padding
+    if max_length !== nothing && padding && length(ids) < max_length
+        pad_id = get(tokenizer.vocab, tokenizer.pad_token, 0)
+        while length(ids) < max_length
+            push!(ids, pad_id)
         end
     end
 
     return ids
+end
+
+"""
+    encode_pair(tokenizer, text_a, text_b; kwargs...) -> NamedTuple
+
+Encode a sentence pair (e.g., for question answering or NLI tasks).
+
+# Keyword Arguments
+- `max_length::Union{Nothing,Int}=nothing`: Maximum total sequence length
+- `truncation::Symbol=:longest_first`: Truncation strategy (:longest_first, :only_first, :only_second)
+- `padding::Bool=false`: Whether to pad to max_length
+
+# Returns
+NamedTuple with:
+- `input_ids::Vector{Int}`: Token IDs
+- `token_type_ids::Vector{Int}`: 0 for first sentence, 1 for second
+- `attention_mask::Vector{Float32}`: 1.0 for real tokens, 0.0 for padding
+"""
+function encode_pair(tokenizer::WordPieceTokenizer, text_a::String, text_b::String;
+    max_length::Union{Nothing,Int}=nothing,
+    truncation::Symbol=:longest_first,
+    padding::Bool=false)
+    tokens_a = tokenize(tokenizer, text_a)
+    tokens_b = tokenize(tokenizer, text_b)
+
+    # Format: [CLS] tokens_a [SEP] tokens_b [SEP]
+    # Token types: 0 0 0 ... 0 0 1 1 ... 1 1
+    special_tokens_count = 3  # [CLS], [SEP], [SEP]
+
+    # Truncate if needed
+    if max_length !== nothing
+        max_tokens = max_length - special_tokens_count
+
+        if length(tokens_a) + length(tokens_b) > max_tokens
+            if truncation == :longest_first
+                # Truncate the longer sequence first
+                while length(tokens_a) + length(tokens_b) > max_tokens
+                    if length(tokens_a) > length(tokens_b)
+                        pop!(tokens_a)
+                    else
+                        pop!(tokens_b)
+                    end
+                end
+            elseif truncation == :only_first
+                excess = length(tokens_a) + length(tokens_b) - max_tokens
+                tokens_a = tokens_a[1:max(1, length(tokens_a) - excess)]
+            elseif truncation == :only_second
+                excess = length(tokens_a) + length(tokens_b) - max_tokens
+                tokens_b = tokens_b[1:max(1, length(tokens_b) - excess)]
+            end
+        end
+    end
+
+    # Build sequence
+    tokens = [tokenizer.cls_token; tokens_a; tokenizer.sep_token; tokens_b; tokenizer.sep_token]
+
+    # Token type IDs: 0 for segment A (including [CLS] and first [SEP]), 1 for segment B
+    type_a_len = 1 + length(tokens_a) + 1  # [CLS] + tokens_a + [SEP]
+    type_b_len = length(tokens_b) + 1       # tokens_b + [SEP]
+    token_type_ids = [fill(0, type_a_len); fill(1, type_b_len)]
+
+    # Convert to IDs
+    unk_id = get(tokenizer.vocab, tokenizer.unk_token, 0)
+    input_ids = [get(tokenizer.vocab, t, unk_id) for t in tokens]
+
+    # Attention mask (all 1s for now)
+    attention_mask = ones(Float32, length(input_ids))
+
+    # Padding
+    if max_length !== nothing && padding && length(input_ids) < max_length
+        pad_id = get(tokenizer.vocab, tokenizer.pad_token, 0)
+        pad_len = max_length - length(input_ids)
+        append!(input_ids, fill(pad_id, pad_len))
+        append!(token_type_ids, fill(0, pad_len))  # Padding gets type 0
+        append!(attention_mask, zeros(Float32, pad_len))
+    end
+
+    return (input_ids=input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask)
 end
 
 """

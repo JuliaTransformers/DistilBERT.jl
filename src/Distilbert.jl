@@ -5,9 +5,11 @@ using NNlib
 using JSON
 using Pickle
 using SafeTensors
+using LoopVectorization
 
 # Include Tokenizer submodule
 include("Tokenizer.jl")
+include("custom_mul.jl")
 using .Tokenizer: WordPieceTokenizer, tokenize, encode, encode_pair, encode_batch, load_vocab
 
 export DistilBertConfig, DistilBertModel, load_model
@@ -130,51 +132,43 @@ function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3}, mask::Union{Not
     k = reshape(k, m.head_dim, m.n_heads, seq_len, batch_size)
     v = reshape(v, m.head_dim, m.n_heads, seq_len, batch_size)
 
-    # Use PermutedDimsArray for lazy permutation (no copy)
-    # (head_dim, n_heads, seq_len, batch_size) -> (head_dim, seq_len, n_heads, batch_size)
-    q_perm = PermutedDimsArray(q, (1, 3, 2, 4))
-    k_perm = PermutedDimsArray(k, (1, 3, 2, 4))
-    v_perm = PermutedDimsArray(v, (1, 3, 2, 4))
+    # Fast attention scores using LoopVectorization
+    # Computes Q^T * K and scales, keeping (head_dim, n_heads, seq_len, batch_size) layout
+    # Output: (seq_len, seq_len, n_heads, batch_size)
+    scale = 1.0f0 / sqrt(Float32(m.head_dim))
+    scores = fast_attention_scores(q, k, scale)
 
-    # Reshape to (head_dim, seq_len, n_heads * batch_size) for batched operations
-    q_reshaped = reshape(q_perm, m.head_dim, seq_len, m.n_heads * batch_size)
-    k_reshaped = reshape(k_perm, m.head_dim, seq_len, m.n_heads * batch_size)
-
-    # Compute attention scores using batched_transpose (more efficient than permutedims)
-    # Q^T @ K: (seq_len, head_dim) @ (head_dim, seq_len) -> (seq_len, seq_len)
-    scores = batched_mul(batched_transpose(q_reshaped), k_reshaped)
-
-    scores = scores ./ sqrt(Float32(m.head_dim))
-
+    # Handle masking
     if mask !== nothing
-        # Optimized mask expansion using broadcasting instead of repeat()
-        # mask shape: (seq_len, batch_size) -> expand to (1, seq_len, n_heads * batch_size)
-        # Reshape mask to (1, seq_len, 1, batch_size) then to (1, seq_len, n_heads * batch_size)
-        mask_expanded = reshape(mask, 1, seq_len, 1, batch_size)
-        mask_flat = reshape(mask_expanded, 1, seq_len, batch_size)
-        # Broadcast across n_heads by repeating the pattern
-        # Create (1, seq_len, n_heads * batch_size) by concatenating along dim 3
-        mask_broadcast = repeat(mask_flat, 1, 1, m.n_heads)
-        mask_final = reshape(mask_broadcast, 1, seq_len, m.n_heads * batch_size)
-        # Apply large negative value where mask is 0 (padding positions)
-        scores = scores .+ (1.0f0 .- mask_final) .* -1.0f9
+        # Optimized mask expansion using broadcasting
+        # mask shape: (seq_len, batch_size) -> expand to match scores
+        # Reshape mask to (1, seq_len, 1, batch_size)
+        mask_reshaped = reshape(mask, 1, seq_len, 1, batch_size)
+        # We can broadcast this directly against scores (seq, seq, heads, batch)
+        # scores is (s1, s2, h, b). Mask applies to s2.
+        # mask_reshaped is (1, s2, 1, b).
+        # Broadcast will match dims.
+        scores = scores .+ (1.0f0 .- mask_reshaped) .* -1.0f9
     end
 
-    weights = softmax(scores, dims=2)
-    weights = m.dropout(weights)
+    # Apply softmax. Reshape to treat heads*batch as one dim
+    scores_flat = reshape(scores, seq_len, seq_len, m.n_heads * batch_size)
+    weights_flat = softmax(scores_flat, dims=2)
+    weights_flat = m.dropout(weights_flat)
 
-    v_reshaped = reshape(v_perm, m.head_dim, seq_len, m.n_heads * batch_size)
+    # Reshape back for context computation
+    weights = reshape(weights_flat, seq_len, seq_len, m.n_heads, batch_size)
 
-    # Context: V @ W^T: (head_dim, seq_len) @ (seq_len, seq_len) -> (head_dim, seq_len)
-    context = batched_mul(v_reshaped, batched_transpose(weights))
+    # Fast context computation using LoopVectorization
+    # Computes V * Weights^T
+    # Output: (head_dim, n_heads, seq_len, batch_size)
+    context = fast_attention_context(v, weights)
 
-    # Reshape back: (head_dim, seq_len, n_heads, batch_size)
-    context = reshape(context, m.head_dim, seq_len, m.n_heads, batch_size)
-
-    # Permute back: (head_dim, n_heads, seq_len, batch_size) -> (dim, seq_len, batch_size)
-    # Use PermutedDimsArray for lazy permutation, then copy for output
-    context_perm = PermutedDimsArray(context, (1, 3, 2, 4))
-    context_flat = reshape(collect(context_perm), dim, seq_len, batch_size)
+    # Final reshape for output linear layer
+    # combine heads: (head_dim, n_heads, seq_len, batch_size) -> (dim, seq_len, batch_size)
+    # Memory layout of (head_dim, n_heads, seq_len, batch_size) allows direct reshape to (dim, seq_len, batch_size)
+    # because head_dim varies fastest, then n_heads.
+    context_flat = reshape(context, dim, seq_len, batch_size)
 
     output = m.out_lin(context_flat)
     return output

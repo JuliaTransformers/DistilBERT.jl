@@ -14,6 +14,7 @@ using Distilbert
 using BenchmarkTools
 using Statistics
 using Printf
+using LinearAlgebra
 
 # Configuration
 const MODEL_PATH = joinpath(dirname(@__DIR__), "models")
@@ -34,6 +35,12 @@ function run_benchmarks()
     println("="^60)
     println("       DISTILBERT.JL BENCHMARKS")
     println("="^60)
+    println()
+
+    # Enable multi-threading for BLAS
+    n_threads = Sys.CPU_THREADS
+    BLAS.set_num_threads(n_threads)
+    println("Using $n_threads BLAS threads")
     println()
 
     # =========================================================================

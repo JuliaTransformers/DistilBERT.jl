@@ -68,6 +68,9 @@ function run_benchmarks()
     end
     println("✓ Model loaded\n")
 
+    # Get vocab size for random token generation
+    vocab_size = length(tokenizer.vocab)
+
     results = Dict{String,NamedTuple{(:median, :mean, :min, :allocs, :memory),Tuple{Float64,Float64,Float64,Int,Float64}}}()
 
     # =========================================================================
@@ -125,7 +128,7 @@ function run_benchmarks()
     println("3. MODEL FORWARD PASS (seq_len=32, batch=1)")
     println("-"^60)
 
-    input_ids = rand(1:30522, 32, 1)
+    input_ids = rand(1:vocab_size, 32, 1)
 
     # Warmup
     model(input_ids)
@@ -151,7 +154,7 @@ function run_benchmarks()
     println("4. MODEL FORWARD PASS (seq_len=128, batch=8)")
     println("-"^60)
 
-    input_ids_batch = rand(1:30522, 128, 8)
+    input_ids_batch = rand(1:vocab_size, 128, 8)
 
     # Warmup
     model(input_ids_batch)

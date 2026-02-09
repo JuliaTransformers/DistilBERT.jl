@@ -61,4 +61,65 @@ using Flux
 
         rm(vocab_file)
     end
+
+    @testset "Pooling Strategies" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+        model = DistilBertModel(config)
+
+        batch_size = 2
+        seq_len = 10
+        input_ids = rand(1:100, seq_len, batch_size)
+        output = model(input_ids)
+
+        # Create a mock attention mask
+        attention_mask = ones(Float32, seq_len, batch_size)
+        attention_mask[8:10, 2] .= 0.0f0  # Padding in second batch
+
+        # CLS pooling
+        cls_out = cls_pooling(output)
+        @test size(cls_out) == (64, batch_size)
+        @test cls_out == output[:, 1, :]
+
+        # Mean pooling
+        mean_out = mean_pooling(output, attention_mask)
+        @test size(mean_out) == (64, batch_size)
+
+        # Max pooling
+        max_out = max_pooling(output, attention_mask)
+        @test size(max_out) == (64, batch_size)
+    end
+
+    @testset "Task-Specific Heads" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+
+        batch_size = 2
+        seq_len = 10
+        input_ids = rand(1:100, seq_len, batch_size)
+
+        # Sequence Classification
+        @testset "Sequence Classification" begin
+            num_labels = 3
+            model = DistilBertForSequenceClassification(config, num_labels)
+            logits = model(input_ids)
+            @test size(logits) == (num_labels, batch_size)
+        end
+
+        # Token Classification
+        @testset "Token Classification" begin
+            num_labels = 5
+            model = DistilBertForTokenClassification(config, num_labels)
+            logits = model(input_ids)
+            @test size(logits) == (num_labels, seq_len, batch_size)
+        end
+
+        # Question Answering
+        @testset "Question Answering" begin
+            model = DistilBertForQuestionAnswering(config)
+            result = model(input_ids)
+            @test haskey(result, :start_logits)
+            @test haskey(result, :end_logits)
+            @test size(result.start_logits) == (seq_len, batch_size)
+            @test size(result.end_logits) == (seq_len, batch_size)
+        end
+    end
 end

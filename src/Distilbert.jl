@@ -426,5 +426,258 @@ end
 
 export inference
 
-end # module Distilbert
+# ============================================================================
+# Pooling Strategies
+# ============================================================================
 
+"""
+    cls_pooling(output) -> Matrix{Float32}
+
+Extract the [CLS] token representation (first token) from model output.
+
+# Arguments
+- `output::Array{Float32,3}`: Model output of shape (dim, seq_len, batch_size)
+
+# Returns
+- `Matrix{Float32}`: Shape (dim, batch_size)
+"""
+function cls_pooling(output::AbstractArray{<:Real,3})
+    return output[:, 1, :]
+end
+
+"""
+    mean_pooling(output, attention_mask) -> Matrix{Float32}
+
+Compute mean of token embeddings, weighted by attention mask.
+
+# Arguments
+- `output::Array{Float32,3}`: Model output of shape (dim, seq_len, batch_size)
+- `attention_mask::Matrix{Float32}`: Mask of shape (seq_len, batch_size)
+
+# Returns
+- `Matrix{Float32}`: Shape (dim, batch_size)
+"""
+function mean_pooling(output::AbstractArray{<:Real,3}, attention_mask::AbstractMatrix{<:Real})
+    # output: (dim, seq_len, batch_size)
+    # mask: (seq_len, batch_size) -> expand to (1, seq_len, batch_size)
+    mask_expanded = reshape(attention_mask, 1, size(attention_mask)...)
+
+    # Mask the output and sum
+    masked_output = output .* mask_expanded
+    sum_embeddings = dropdims(sum(masked_output, dims=2), dims=2)  # (dim, batch_size)
+
+    # Count non-padding tokens per batch
+    sum_mask = sum(attention_mask, dims=1)  # (1, batch_size)
+    sum_mask = max.(sum_mask, 1.0f0)  # Avoid division by zero
+
+    return sum_embeddings ./ sum_mask
+end
+
+"""
+    max_pooling(output, attention_mask) -> Matrix{Float32}
+
+Compute max of token embeddings, excluding padding tokens.
+
+# Arguments
+- `output::Array{Float32,3}`: Model output of shape (dim, seq_len, batch_size)
+- `attention_mask::Matrix{Float32}`: Mask of shape (seq_len, batch_size)
+
+# Returns
+- `Matrix{Float32}`: Shape (dim, batch_size)
+"""
+function max_pooling(output::AbstractArray{<:Real,3}, attention_mask::AbstractMatrix{<:Real})
+    # Set padding positions to very negative values so they don't affect max
+    mask_expanded = reshape(attention_mask, 1, size(attention_mask)...)
+    masked_output = output .* mask_expanded .+ (1.0f0 .- mask_expanded) .* -1.0f9
+
+    return dropdims(maximum(masked_output, dims=2), dims=2)
+end
+
+export cls_pooling, mean_pooling, max_pooling
+
+# ============================================================================
+# Task-Specific Heads
+# ============================================================================
+
+"""
+    DistilBertForSequenceClassification
+
+DistilBERT model with a classification head for sequence classification tasks.
+"""
+struct DistilBertForSequenceClassification
+    distilbert::DistilBertModel
+    pre_classifier::Dense
+    classifier::Dense
+    dropout::Dropout
+end
+
+Flux.@layer DistilBertForSequenceClassification
+
+"""
+    DistilBertForSequenceClassification(config, num_labels)
+
+Create a sequence classification model.
+
+# Arguments
+- `config::DistilBertConfig`: Model configuration
+- `num_labels::Int`: Number of classification labels
+"""
+function DistilBertForSequenceClassification(config::DistilBertConfig, num_labels::Int)
+    return DistilBertForSequenceClassification(
+        DistilBertModel(config),
+        Dense(config.dim => config.dim, relu),
+        Dense(config.dim => num_labels),
+        Dropout(config.seq_classif_dropout)
+    )
+end
+
+function (m::DistilBertForSequenceClassification)(input_ids::AbstractMatrix{<:Integer}; mask=nothing)
+    hidden_states = m.distilbert(input_ids; mask=mask)
+    pooled_output = cls_pooling(hidden_states)  # (dim, batch_size)
+    pooled_output = m.pre_classifier(pooled_output)
+    pooled_output = m.dropout(pooled_output)
+    logits = m.classifier(pooled_output)
+    return logits  # (num_labels, batch_size)
+end
+
+"""
+    DistilBertForTokenClassification
+
+DistilBERT model with a token classification head (e.g., NER, POS tagging).
+"""
+struct DistilBertForTokenClassification
+    distilbert::DistilBertModel
+    classifier::Dense
+    dropout::Dropout
+end
+
+Flux.@layer DistilBertForTokenClassification
+
+"""
+    DistilBertForTokenClassification(config, num_labels)
+
+Create a token classification model.
+
+# Arguments
+- `config::DistilBertConfig`: Model configuration
+- `num_labels::Int`: Number of token labels
+"""
+function DistilBertForTokenClassification(config::DistilBertConfig, num_labels::Int)
+    return DistilBertForTokenClassification(
+        DistilBertModel(config),
+        Dense(config.dim => num_labels),
+        Dropout(config.dropout)
+    )
+end
+
+function (m::DistilBertForTokenClassification)(input_ids::AbstractMatrix{<:Integer}; mask=nothing)
+    hidden_states = m.distilbert(input_ids; mask=mask)  # (dim, seq_len, batch_size)
+    hidden_states = m.dropout(hidden_states)
+    logits = m.classifier(hidden_states)
+    return logits  # (num_labels, seq_len, batch_size)
+end
+
+"""
+    DistilBertForQuestionAnswering
+
+DistilBERT model with a span prediction head for extractive QA.
+"""
+struct DistilBertForQuestionAnswering
+    distilbert::DistilBertModel
+    qa_outputs::Dense
+end
+
+Flux.@layer DistilBertForQuestionAnswering
+
+"""
+    DistilBertForQuestionAnswering(config)
+
+Create a question answering model.
+"""
+function DistilBertForQuestionAnswering(config::DistilBertConfig)
+    return DistilBertForQuestionAnswering(
+        DistilBertModel(config),
+        Dense(config.dim => 2)  # start_logits and end_logits
+    )
+end
+
+function (m::DistilBertForQuestionAnswering)(input_ids::AbstractMatrix{<:Integer}; mask=nothing)
+    hidden_states = m.distilbert(input_ids; mask=mask)  # (dim, seq_len, batch_size)
+    logits = m.qa_outputs(hidden_states)  # (2, seq_len, batch_size)
+    start_logits = logits[1, :, :]  # (seq_len, batch_size)
+    end_logits = logits[2, :, :]    # (seq_len, batch_size)
+    return (start_logits=start_logits, end_logits=end_logits)
+end
+
+export DistilBertForSequenceClassification, DistilBertForTokenClassification, DistilBertForQuestionAnswering
+
+# ============================================================================
+# Sentence Embeddings
+# ============================================================================
+
+"""
+    embed(model, tokenizer, text; pooling=:cls) -> Vector{Float32}
+
+Get sentence embedding for a single text.
+
+# Arguments
+- `model::DistilBertModel`: The DistilBERT model
+- `tokenizer::WordPieceTokenizer`: The tokenizer
+- `text::String`: Input text
+- `pooling::Symbol`: Pooling strategy - `:cls`, `:mean`, or `:max` (default: `:cls`)
+
+# Returns
+- `Vector{Float32}`: Sentence embedding of shape (dim,)
+"""
+function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String; pooling::Symbol=:cls)
+    output = inference(model, tokenizer, text)
+
+    if pooling == :cls
+        return vec(cls_pooling(output))
+    elseif pooling == :mean
+        # For single text, all tokens are valid
+        mask = ones(Float32, size(output, 2), 1)
+        return vec(mean_pooling(output, mask))
+    elseif pooling == :max
+        mask = ones(Float32, size(output, 2), 1)
+        return vec(max_pooling(output, mask))
+    else
+        error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
+    end
+end
+
+"""
+    embed(model, tokenizer, texts; pooling=:cls, max_length=512) -> Matrix{Float32}
+
+Get sentence embeddings for multiple texts.
+
+# Arguments
+- `model::DistilBertModel`: The DistilBERT model
+- `tokenizer::WordPieceTokenizer`: The tokenizer
+- `texts::Vector{String}`: Input texts
+- `pooling::Symbol`: Pooling strategy - `:cls`, `:mean`, or `:max` (default: `:cls`)
+- `max_length::Int`: Maximum sequence length (default: 512)
+
+# Returns
+- `Matrix{Float32}`: Sentence embeddings of shape (dim, batch_size)
+"""
+function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, texts::Vector{String};
+    pooling::Symbol=:cls, max_length::Int=512)
+    Flux.testmode!(model)
+    input_ids, attention_mask = encode_batch(tokenizer, texts; max_length=max_length)
+    output = model(input_ids; mask=attention_mask)
+
+    if pooling == :cls
+        return cls_pooling(output)
+    elseif pooling == :mean
+        return mean_pooling(output, attention_mask)
+    elseif pooling == :max
+        return max_pooling(output, attention_mask)
+    else
+        error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
+    end
+end
+
+export embed
+
+end # module Distilbert

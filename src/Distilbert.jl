@@ -130,47 +130,53 @@ function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3}, mask::Union{Not
     k = reshape(k, m.head_dim, m.n_heads, seq_len, batch_size)
     v = reshape(v, m.head_dim, m.n_heads, seq_len, batch_size)
 
-    # Permute for attention: (head_dim, seq_len, n_heads, batch_size)
-    q = permutedims(q, (1, 3, 2, 4))
-    k = permutedims(k, (1, 3, 2, 4))
-    v = permutedims(v, (1, 3, 2, 4))
+    # Use PermutedDimsArray for lazy permutation (no copy)
+    # (head_dim, n_heads, seq_len, batch_size) -> (head_dim, seq_len, n_heads, batch_size)
+    q_perm = PermutedDimsArray(q, (1, 3, 2, 4))
+    k_perm = PermutedDimsArray(k, (1, 3, 2, 4))
+    v_perm = PermutedDimsArray(v, (1, 3, 2, 4))
 
-    # Attention scores
-    # Reshape to (head_dim, seq_len, n_heads * batch_size)
-    q_reshaped = reshape(q, m.head_dim, seq_len, m.n_heads * batch_size)
-    k_reshaped = reshape(k, m.head_dim, seq_len, m.n_heads * batch_size)
+    # Reshape to (head_dim, seq_len, n_heads * batch_size) for batched operations
+    q_reshaped = reshape(q_perm, m.head_dim, seq_len, m.n_heads * batch_size)
+    k_reshaped = reshape(k_perm, m.head_dim, seq_len, m.n_heads * batch_size)
 
-    # scores: (seq_len, seq_len, n_heads * batch_size)
-    scores = batched_mul(permutedims(q_reshaped, (2, 1, 3)), k_reshaped)
+    # Compute attention scores using batched_transpose (more efficient than permutedims)
+    # Q^T @ K: (seq_len, head_dim) @ (head_dim, seq_len) -> (seq_len, seq_len)
+    scores = batched_mul(batched_transpose(q_reshaped), k_reshaped)
 
     scores = scores ./ sqrt(Float32(m.head_dim))
 
     if mask !== nothing
-        # mask shape: (seq_len, batch_size) with 1.0 for real tokens, 0.0 for padding
-        # Expand mask to match scores shape: (seq_len, seq_len, n_heads * batch_size)
-        # We want to mask out attention TO padding tokens (columns in attention matrix)
-        mask_expanded = reshape(mask, 1, seq_len, batch_size)  # (1, seq_len, batch_size)
-        mask_expanded = repeat(mask_expanded, 1, 1, m.n_heads)  # (1, seq_len, n_heads * batch_size)
-        mask_expanded = reshape(mask_expanded, 1, seq_len, m.n_heads * batch_size)
+        # Optimized mask expansion using broadcasting instead of repeat()
+        # mask shape: (seq_len, batch_size) -> expand to (1, seq_len, n_heads * batch_size)
+        # Reshape mask to (1, seq_len, 1, batch_size) then to (1, seq_len, n_heads * batch_size)
+        mask_expanded = reshape(mask, 1, seq_len, 1, batch_size)
+        mask_flat = reshape(mask_expanded, 1, seq_len, batch_size)
+        # Broadcast across n_heads by repeating the pattern
+        # Create (1, seq_len, n_heads * batch_size) by concatenating along dim 3
+        mask_broadcast = repeat(mask_flat, 1, 1, m.n_heads)
+        mask_final = reshape(mask_broadcast, 1, seq_len, m.n_heads * batch_size)
         # Apply large negative value where mask is 0 (padding positions)
-        scores = scores .+ (1.0f0 .- mask_expanded) .* -1.0f9
+        scores = scores .+ (1.0f0 .- mask_final) .* -1.0f9
     end
 
     weights = softmax(scores, dims=2)
     weights = m.dropout(weights)
 
-    v_reshaped = reshape(v, m.head_dim, seq_len, m.n_heads * batch_size)
+    v_reshaped = reshape(v_perm, m.head_dim, seq_len, m.n_heads * batch_size)
 
-    context = batched_mul(v_reshaped, permutedims(weights, (2, 1, 3)))
+    # Context: V @ W^T: (head_dim, seq_len) @ (seq_len, seq_len) -> (head_dim, seq_len)
+    context = batched_mul(v_reshaped, batched_transpose(weights))
 
     # Reshape back: (head_dim, seq_len, n_heads, batch_size)
     context = reshape(context, m.head_dim, seq_len, m.n_heads, batch_size)
 
     # Permute back: (head_dim, n_heads, seq_len, batch_size) -> (dim, seq_len, batch_size)
-    context = permutedims(context, (1, 3, 2, 4))
-    context = reshape(context, dim, seq_len, batch_size)
+    # Use PermutedDimsArray for lazy permutation, then copy for output
+    context_perm = PermutedDimsArray(context, (1, 3, 2, 4))
+    context_flat = reshape(collect(context_perm), dim, seq_len, batch_size)
 
-    output = m.out_lin(context)
+    output = m.out_lin(context_flat)
     return output
 end
 

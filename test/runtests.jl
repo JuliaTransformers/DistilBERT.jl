@@ -122,4 +122,107 @@ using Flux
             @test size(result.end_logits) == (seq_len, batch_size)
         end
     end
+
+    @testset "Gradient Tests" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+
+        @testset "DistilBertModel gradients" begin
+            model = DistilBertModel(config)
+            x = rand(1:100, 10, 2)
+
+            # Use Flux.gradient which internally uses Zygote
+            grads = Flux.gradient(model) do m
+                sum(m(x))
+            end
+
+            @test grads[1] !== nothing
+        end
+
+        @testset "SequenceClassification gradients" begin
+            model = DistilBertForSequenceClassification(config, 3)
+            x = rand(1:100, 10, 2)
+
+            grads = Flux.gradient(model) do m
+                sum(m(x))
+            end
+
+            @test grads[1] !== nothing
+        end
+    end
+
+    @testset "Edge Cases" begin
+        # Create a simple vocab for testing
+        vocab_file = tempname() * ".txt"
+        tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]",
+            "hello", "world", "test", ".", ",", "a", "the"]
+        open(vocab_file, "w") do f
+            for t in tokens
+                println(f, t)
+            end
+        end
+        tokenizer = WordPieceTokenizer(vocab_file)
+
+        @testset "Empty string" begin
+            ids = encode(tokenizer, "")
+            # Should at least have [CLS] and [SEP]
+            @test length(ids) >= 2
+            @test ids[1] == tokenizer.vocab["[CLS]"]
+            @test ids[end] == tokenizer.vocab["[SEP]"]
+        end
+
+        @testset "Whitespace only" begin
+            ids = encode(tokenizer, "   ")
+            @test length(ids) >= 2
+        end
+
+        @testset "Long sequence truncation" begin
+            long_text = join(repeat(["hello world"], 100), " ")
+            ids = encode(tokenizer, long_text; max_length=20, truncation=true)
+            @test length(ids) == 20
+            @test ids[end] == tokenizer.vocab["[SEP]"]  # SEP preserved
+        end
+
+        @testset "Padding" begin
+            ids = encode(tokenizer, "hello"; max_length=20, padding=true)
+            @test length(ids) == 20
+            pad_id = tokenizer.vocab["[PAD]"]
+            @test ids[end] == pad_id
+        end
+
+        @testset "add_special_tokens=false" begin
+            ids = encode(tokenizer, "hello"; add_special_tokens=false)
+            cls_id = tokenizer.vocab["[CLS]"]
+            sep_id = tokenizer.vocab["[SEP]"]
+            @test !(cls_id in ids)
+            @test !(sep_id in ids)
+        end
+
+        @testset "encode_pair" begin
+            result = encode_pair(tokenizer, "hello", "world")
+            @test haskey(result, :input_ids)
+            @test haskey(result, :token_type_ids)
+            @test haskey(result, :attention_mask)
+            @test length(result.input_ids) == length(result.token_type_ids)
+            @test length(result.input_ids) == length(result.attention_mask)
+            # First tokens should be type 0, later tokens type 1
+            @test result.token_type_ids[1] == 0
+            @test 1 in result.token_type_ids  # type 1 should exist
+        end
+
+        @testset "All-padding batch handling" begin
+            config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+            model = DistilBertModel(config)
+
+            # Minimal input with padding
+            input_ids = fill(1, 5, 2)  # PAD token ID
+            mask = zeros(Float32, 5, 2)
+            mask[1:2, :] .= 1.0f0  # Only first 2 tokens are real
+
+            output = model(input_ids; mask=mask)
+            @test size(output) == (64, 5, 2)
+            @test !any(isnan, output)
+        end
+
+        rm(vocab_file)
+    end
 end

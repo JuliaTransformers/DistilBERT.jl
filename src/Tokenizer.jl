@@ -50,57 +50,72 @@ function basic_tokenize(text::String, do_lower_case::Bool)
     end
 
     tokens = String[]
-    current_token = Char[]
+    buffer = IOBuffer()
 
     for char in text
         if isspace(char)
-            if !isempty(current_token)
-                push!(tokens, String(current_token))
-                empty!(current_token)
+            if buffer.size > 0
+                push!(tokens, String(take!(buffer)))
             end
         elseif is_punctuation(char)
-            if !isempty(current_token)
-                push!(tokens, String(current_token))
-                empty!(current_token)
+            if buffer.size > 0
+                push!(tokens, String(take!(buffer)))
             end
-            push!(tokens, String([char]))
+            push!(tokens, string(char))  # More efficient than String([char])
         else
-            push!(current_token, char)
+            write(buffer, char)
         end
     end
 
-    if !isempty(current_token)
-        push!(tokens, String(current_token))
+    if buffer.size > 0
+        push!(tokens, String(take!(buffer)))
     end
 
     return tokens
 end
 
 function wordpiece_tokenize(token::String, vocab::Dict{String,Int}, unk_token::String)
-    chars = collect(token)
-    len = length(chars)
+    # Use character indices instead of collecting into array
+    len = length(token)  # Number of characters (not bytes)
     output_tokens = String[]
-    start = 1
+    start_char = 1
 
-    while start <= len
-        end_idx = len
-        cur_substr = nothing
+    while start_char <= len
+        end_char = len
         found = false
 
-        while start <= end_idx
-            substr = String(chars[start:end_idx])
-            if start > 1
-                substr = "##" * substr
+        while start_char <= end_char
+            # Use SubString to avoid allocation - creates a view of the original string
+            # We need character indices, so use thisind/nextind for proper Unicode handling
+            start_byte = thisind(token, start_char)
+            end_byte = thisind(token, end_char)
+            # Get the byte range for the substring
+            if end_char < len
+                end_byte = prevind(token, nextind(token, end_byte))
+            else
+                end_byte = lastindex(token)
             end
 
-            if haskey(vocab, substr)
-                cur_substr = substr
-                push!(output_tokens, cur_substr)
-                start = end_idx + 1
-                found = true
-                break
+            substr_view = SubString(token, start_byte, end_byte)
+
+            # Check with/without ## prefix
+            if start_char > 1
+                substr_with_prefix = "##" * substr_view
+                if haskey(vocab, substr_with_prefix)
+                    push!(output_tokens, substr_with_prefix)
+                    start_char = end_char + 1
+                    found = true
+                    break
+                end
+            else
+                if haskey(vocab, substr_view)
+                    push!(output_tokens, String(substr_view))
+                    start_char = end_char + 1
+                    found = true
+                    break
+                end
             end
-            end_idx -= 1
+            end_char -= 1
         end
 
         if !found

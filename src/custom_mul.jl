@@ -54,7 +54,7 @@ function fast_attention_context(V::AbstractArray{T,4}, W::AbstractArray{T,4}) wh
 
     Ctx = Array{T}(undef, D, H, S, B)
 
-    @turbo for b in 1:B
+    @tturbo for b in 1:B
         for h in 1:H
             for s1 in 1:S # Query pos (output col)
                 for d in 1:D

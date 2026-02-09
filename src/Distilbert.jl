@@ -8,10 +8,10 @@ using SafeTensors
 
 # Include Tokenizer submodule
 include("Tokenizer.jl")
-using .Tokenizer: WordPieceTokenizer, tokenize, encode, encode_batch, load_vocab
+using .Tokenizer: WordPieceTokenizer, tokenize, encode, encode_pair, encode_batch, load_vocab
 
 export DistilBertConfig, DistilBertModel, load_model
-export WordPieceTokenizer, tokenize, encode, encode_batch, load_vocab
+export WordPieceTokenizer, tokenize, encode, encode_pair, encode_batch, load_vocab
 
 struct DistilBertConfig
     vocab_size::Int

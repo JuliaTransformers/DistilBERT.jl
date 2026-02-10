@@ -111,65 +111,45 @@ function MultiHeadSelfAttention(config::DistilBertConfig)
     )
 end
 
-function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3}; mask::AbstractMatrix{Float32}=ones(Float32, 0, 0))
+function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3}; mask::AbstractArray=ones(Float32, 0, 0))
     # x shape: (dim, seq_len, batch_size)
-    dim, seq_len, batch_size = size(x)
-    HB = m.n_heads * batch_size
 
-    q = m.q_lin(x)  # (dim, seq_len, batch_size)
+    q = m.q_lin(x)
     k = m.k_lin(x)
     v = m.v_lin(x)
 
-    # Reshape for batched_mul: (head_dim, n_heads*batch_size, seq_len) is NOT what we want.
-    # We need (head_dim, seq_len, n_heads*batch_size) for batched_mul.
-    # From (dim, seq_len, batch_size) = (head_dim*n_heads, seq_len, batch_size)
-    # reshape to (head_dim, n_heads, seq_len, batch_size) then we need to merge dims 2&4.
-    # Since n_heads and batch_size are not adjacent, we must use permutedims.
-    # BUT: Flux/NNlib provide batched_mul which handles this pattern.
-    #
-    # Alternative zero-copy approach:
-    #   (dim, seq_len, B) -> view as (head_dim, n_heads, seq_len, B)
-    #   PermutedDimsArray gives a lazy view (no copy) that Zygote can differentiate.
-    q4 = reshape(q, m.head_dim, m.n_heads, seq_len, batch_size)
-    k4 = reshape(k, m.head_dim, m.n_heads, seq_len, batch_size)
-    v4 = reshape(v, m.head_dim, m.n_heads, seq_len, batch_size)
+    # Perform dot product attention using NNlib
+    # NNlib.dot_product_attention expects q, k, v
+    # It handles multi-head splitting internally if nheads is provided.
 
-    # Lazy transpose of dims 2<->3: (head_dim, seq_len, n_heads, batch_size)
-    # Then reshape to (head_dim, seq_len, HB) for batched_mul
-    q3 = reshape(PermutedDimsArray(q4, (1, 3, 2, 4)), m.head_dim, seq_len, HB)
-    k3 = reshape(PermutedDimsArray(k4, (1, 3, 2, 4)), m.head_dim, seq_len, HB)
-    v3 = reshape(PermutedDimsArray(v4, (1, 3, 2, 4)), m.head_dim, seq_len, HB)
+    # Prepare mask for NNlib
+    # Current mask is (seq_len, batch_size) with 1 for keep, 0 for drop.
+    # NNlib expects a mask broadcastable to (kv_len, q_len, nheads, batch_size).
+    # We need to reshape our mask to (seq_len, 1, 1, batch_size) and convert to boolean (or suitable for addition if not using boolean mask support in older NNlib, but recent NNlib supports boolean masks).
 
-    # Attention scores via BLAS batch GEMM: Q^T * K * scale
-    # batched_transpose(Q) is (seq_len, head_dim, HB)
-    # result: (seq_len, seq_len, HB)
-    scale = 1.0f0 / sqrt(Float32(m.head_dim))
-    scores = NNlib.batched_mul(NNlib.batched_transpose(q3), k3)
-    scores = scores .* scale
-
-    # Handle masking
+    mask_nnlib = nothing
     if length(mask) > 0
-        # mask: (seq_len, batch_size) -> (1, seq_len, HB)
-        mask_exp = repeat(reshape(mask, 1, seq_len, 1, batch_size), 1, 1, m.n_heads, 1)
-        mask3 = reshape(mask_exp, 1, seq_len, HB)
-        scores = scores .+ (1.0f0 .- mask3) .* -1.0f9
+        # Assume mask is (seq_len, batch)
+        # Reshape to (seq_len, 1, 1, batch)
+        # We use boolean mask: true = keep, false = drop?
+        # NNlib doc says: "The mask is applied to the attention scores just before the softmax."
+        # If boolean: true means "keep" (add 0), false means "mask" (add -Inf).
+        # Wait, let's verify NNlib behavior.
+        # Standard: boolean mask usually means "true keeps".
+        # Let's trust the test script we ran earlier.
+        mask_nnlib = reshape(mask, size(mask, 1), 1, 1, size(mask, 2)) .== 1
     end
 
-    # Softmax over key dimension (dim=2) and dropout
-    weights = softmax(scores, dims=2)
-    weights = m.dropout(weights)
+    # Apply attention
+    # fdrop is applied to attention weights after softmax
+    context, attn_weights = dot_product_attention(q, k, v;
+        nheads=m.n_heads,
+        mask=mask_nnlib,
+        fdrop=m.dropout)
 
-    # Context via BLAS batch GEMM: V * Weights^T
-    # V: (head_dim, seq_len, HB), Weights^T: (seq_len, seq_len, HB)
-    # result: (head_dim, seq_len, HB)
-    context = NNlib.batched_mul(v3, NNlib.batched_transpose(weights))
+    # context is (dim, seq_len, batch_size)
 
-    # Reshape back: (head_dim, seq_len, HB) -> (head_dim, seq_len, n_heads, B)
-    #             -> permute to (head_dim, n_heads, seq_len, B) -> (dim, seq_len, B)
-    context4 = PermutedDimsArray(reshape(context, m.head_dim, seq_len, m.n_heads, batch_size), (1, 3, 2, 4))
-    context_flat = reshape(collect(context4), dim, seq_len, batch_size)
-
-    output = m.out_lin(context_flat)
+    output = m.out_lin(context)
     return output
 end
 

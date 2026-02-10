@@ -2,6 +2,7 @@
 using Flux
 using Distilbert
 using BenchmarkTools
+using MKL
 using Statistics
 using Printf
 using LinearAlgebra
@@ -18,10 +19,13 @@ function benchmark_julia(model_name::String="big")
     println("       JULIA BENCHMARK (models/$model_name)")
     println("="^60)
 
-    BLAS.set_num_threads(4)
+    # Force BLAS to use all available threads
+    n_threads = Threads.nthreads()
+    BLAS.set_num_threads(n_threads)
+
     println("BLAS Implementation: $(BLAS.get_config())")
     println("BLAS Threads: $(BLAS.get_num_threads())")
-    println("Julia Threads: $(Threads.nthreads())")
+    println("Julia Threads: $n_threads")
     println()
 
     # 1. Load Model

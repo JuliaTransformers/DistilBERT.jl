@@ -14,35 +14,47 @@ We validated the Julia implementation against the HuggingFace Transformers (PyTo
 
 > **Note on Big Model:** The max difference of ~`6e-3` is expected when comparing different framework implementations (LibTorch vs OpenBLAS) accumulated across 6 transformer layers. The per-token values match to 3-4 decimal places.
 
-## 2. Performance Benchmark (Big Model)
+## 2. Performance Benchmarks
 
-**Model:** `distilbert-base-uncased` (dim=768, layers=6)
 **Threads:** 4 (Julia & PyTorch)
 
-### Summary
-- **Tokenizer:** Julia is **~9x faster** than HuggingFace's fast tokenizer.
-- **Inference:** Julia is **~2.5x - 8.8x slower** than PyTorch.
+### Small Model (dim=32, layers=5)
 
-### Detailed Results
-
-| Component | Batch Size | Sequence Length | Julia (ms) | Python (ms) | Speedup (Julia vs Py) |
-|-----------|------------|-----------------|------------|-------------|-----------------------|
-| **Tokenizer** | 1 | - | **0.03** | 0.28 | **9.3x Faster** 🚀 |
-| **Tokenizer** | 8 | - | **0.13** | 1.13 | **8.7x Faster** 🚀 |
+| Component | Batch Size | Sequence Length | Julia (MKL) | Python | Speedup (MKL vs Py) |
+|-----------|------------|-----------------|-------------|--------|---------------------|
+| **Tokenizer** | 1 | - | **0.04** | 0.16 | **4.0x Faster** 🚀 |
+| **Tokenizer** | 8 | - | **0.32** | 0.89 | **2.8x Faster** 🚀 |
 | | | | | | |
-| **Model** | 1 | 32 | 471.91 | **178.52** | 2.6x Slower |
-| **Model** | 8 | 32 | 2012.24 | **719.30** | 2.8x Slower |
-| **Model** | 1 | 128 | 2531.93 | **440.30** | 5.8x Slower |
-| **Model** | 8 | 128 | 17716.66 | **2011.63** | 8.8x Slower |
+| **Model** | 1 | 32 | **0.53** | 6.05 | **11.4x Faster** 🚀 |
+| **Model** | 8 | 32 | **4.67** | 4.78 | **1.02x Faster** |
+| **Model** | 1 | 128 | 6.49 | **6.04** | 1.07x Slower |
+| **Model** | 8 | 128 | 37.65 | **10.12** | 3.7x Slower |
 
-### Analysis
+### Big Model (dim=768, layers=6)
 
-1.  **Tokenizer:** The optimization to use `IOBuffer` and avoid string allocations in `WordPieceTokenizer` paid off massively. Julia's string processing string is superior here.
-2.  **Model Inference:** PyTorch is significantly faster. This is likely due to:
-    - **BLAS Backend:** PyTorch uses MKL (Intel Math Kernel Library) which is highly optimized for AVX2/AVX-512. Our Julia run used `OpenBLAS` (standard in Julia distribution).
-    - **Memory Layout:** PyTorch's `baddbmm` and memory manager are highly tuned for transformer workloads.
-    - **Allocations:** Julia's `NNlib.batched_mul` + broadcasting likely allocates more intermediate arrays than PyTorch's fused kernels.
+| Component | Batch Size | Sequence Length | Julia (MKL) | Python | Speedup (MKL vs Py) |
+|-----------|------------|-----------------|-------------|--------|---------------------|
+| **Tokenizer** | 1 | - | **0.01** | 0.10 | **10.0x Faster** 🚀 |
+| **Tokenizer** | 8 | - | **0.11** | 0.60 | **5.5x Faster** 🚀 |
+| | | | | | |
+| **Model** | 1 | 32 | 55.70 | **46.45** | 1.2x Slower |
+| **Model** | 8 | 32 | 360.22 | **230.06** | 1.6x Slower |
+| **Model** | 1 | 128 | 195.66 | **133.64** | 1.5x Slower |
+| **Model** | 8 | 128 | 1522.64 | **835.53** | 1.8x Slower |
 
-**Recommendation:** To close the gap, we would need to:
-1.  Use `MKL.jl` (we removed it to drop the hard dependency, but it's crucial for performance).
-2.  Optimize `batched_mul` usage or use `Octavian.jl` for pure-Julia matmul.
+### Analysis (After NNlib Refactor)
+
+1.  **Massive Improvement:** The switch to `NNlib.dot_product_attention` yielded significant gains.
+    - Single-item inference for Big Model improved from **175ms** (previous MKL run) to **56ms**.
+    - This is a **~3.1x speedup** just from the attention refactor!
+2.  **Gap Closing:**
+    - Julia is now much closer to PyTorch performance.
+    - Julia is **11x faster** for small model single-item inference.
+    - For the Big Model, Julia is solely ~1.2x - 1.8x slower than highly-optimized PyTorch, which is a massive improvement from the previous 6.5x slowdown.
+3.  **Remaining Bottlenecks:**
+    - Usage of `NNlib.batched_mul` elsewhere (e.g., in other layers) or general allocation overhead in Flux layers might be the remaining gap.
+
+**Recommendation:**
+1.  Investigate other manual `batched_mul` usages to replace with NNlib primitives if possible.
+2.  Consider `Octavian.jl` for CPU-based matrix multiplication speedups.
+

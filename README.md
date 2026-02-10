@@ -86,6 +86,9 @@ println("Batch shape: ", size(batch_embeddings))
 
 ## 📊 Benchmarks
 
+> [!WARNING]
+> **Benchmark Variability:** Results may vary significantly depending on system load, CPU scaling governors, and background processes.
+
 Hardware: Linux, 4 Threads. Comparison vs PyTorch (Hugging Face).
 
 ### Small Model (dim=32)

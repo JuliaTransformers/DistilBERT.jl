@@ -52,5 +52,3 @@ We validated the Julia implementation against the HuggingFace Transformers (PyTo
 4.  **Correctness:**
     - Small Model Embeddings match to `2.4e-7` (Fixed `layer_norm_eps` mismatch).
     - Big Model Output matches to `6e-3` (accumulated FP32 error).
-
-**Conclusion:** Distilbert.jl is now **production-ready** with performance competitive with or exceeding HuggingFace Transformers for typical inference workloads.

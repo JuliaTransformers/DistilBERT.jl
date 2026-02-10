@@ -42,7 +42,7 @@ function DistilBertConfig(;
     initializer_range=0.02f0,
     qa_dropout=0.1f0,
     seq_classif_dropout=0.2f0,
-    layer_norm_eps=1e-12f0
+    layer_norm_eps=1f-12
 )
     return DistilBertConfig(
         vocab_size, dim, n_layers, n_heads, hidden_dim, dropout,

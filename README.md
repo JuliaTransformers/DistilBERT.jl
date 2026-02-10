@@ -23,8 +23,8 @@ This project implements the DistilBERT architecture from scratch, featuring a cu
 This package is currently a local project. Clone the repository and instantiate the environment:
 
 ```bash
-git clone https://github.com/StartYourStart/Distilbert.jl.git
-cd Distilbert.jl
+git clone https://github.com/StartYourStart/DistilBERT.jl.git
+cd DistilBERT.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 

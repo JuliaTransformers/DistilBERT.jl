@@ -1,4 +1,4 @@
-# Future Improvements for Distilbert.jl
+# Future Improvements for DistilBERT.jl
 
 ## Performance
 

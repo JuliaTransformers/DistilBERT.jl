@@ -2,6 +2,7 @@ export load_model
 
 """
     load_model(path; init_random=false)
+    load_model(::Type{DistilBertForMaskedLM}, path; init_random=false)
     load_model(::Type{DistilBertForSequenceClassification}, path; num_labels=2, init_random=false)
     load_model(::Type{DistilBertForTokenClassification}, path; num_labels, init_random=false)
     load_model(::Type{DistilBertForQuestionAnswering}, path; init_random=false)
@@ -259,3 +260,37 @@ function load_weights!(model::DistilBertForQuestionAnswering, state_dict)
 
     _report_unused_keys(state_dict, used_keys)
 end
+
+function load_model(::Type{DistilBertForMaskedLM}, path::String;
+    init_random::Bool=false)
+    config, state_dict = _load_config_and_weights(path; init_random)
+    model = DistilBertForMaskedLM(config)
+
+    if state_dict !== nothing
+        load_weights!(model, state_dict)
+    end
+
+    return model
+end
+
+function load_weights!(model::DistilBertForMaskedLM, state_dict)
+    used_keys = Set{String}()
+    key_prefix = _detect_key_prefix(state_dict)
+    _load_base_weights!(model.distilbert, state_dict, used_keys, key_prefix)
+
+    # Load MLM head weights
+    load_dense!(model.vocab_transform, "vocab_transform", state_dict, used_keys, "")
+    load_layernorm!(model.vocab_layer_norm, "vocab_layer_norm", state_dict, used_keys, "")
+
+    # Load vocab_projector bias (weight is tied to word embeddings)
+    bias_key = "vocab_projector.bias"
+    if haskey(state_dict, bias_key)
+        push!(used_keys, bias_key)
+        copy!(model.vocab_projector_bias, Float32.(state_dict[bias_key]))
+    else
+        @warn "Missing weight: $bias_key"
+    end
+
+    _report_unused_keys(state_dict, used_keys)
+end
+

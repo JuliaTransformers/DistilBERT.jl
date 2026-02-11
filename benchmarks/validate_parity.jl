@@ -6,7 +6,8 @@ Usage: julia --project=. benchmarks/validate_parity.jl [model_dir|small|big]
 This script:
 1. Validates Tokenizer parity (tokens & IDs)
 2. Validates Model parity (hidden states)
-3. Supports both 'small' and 'big' models via argument
+3. Validates Masked LM parity (fill-mask predictions)
+4. Supports both 'small' and 'big' models via argument
 =#
 
 using DistilBERT
@@ -199,11 +200,114 @@ print(json.dumps(result))
         println("❌ FAIL (Diff > 1e-2)")
     end
 
+    # ----------------------------------------------------------------
+    # TEST 3: Masked Language Model (fill-mask) Parity
+    # ----------------------------------------------------------------
+    println("\n" * "-"^60)
+    println("TEST 3: Masked Language Model Parity")
+    println("-"^60)
+
+    mlm_text = "Hello I'm a [MASK] model."
+    println("Input: \"$mlm_text\"")
+
+    # Check if the model has MLM architecture
+    config_dict = JSON.parsefile(joinpath(model_path, "config.json"))
+    architectures = get(config_dict, "architectures", String[])
+    has_mlm = "DistilBertForMaskedLM" in architectures
+
+    mlm_pass = true
+    if !has_mlm
+        println("⏭️  SKIP: Model does not have DistilBertForMaskedLM architecture.")
+        println("   Architectures: $architectures")
+    else
+        # Run Julia MLM
+        println("[Julia] Loading DistilBertForMaskedLM...")
+        mlm_model = load_model(DistilBertForMaskedLM, model_path)
+        Flux.testmode!(mlm_model)
+        jl_results = unmask(mlm_model, tokenizer, mlm_text; top_k=5)
+
+        println("[Julia] Top-5 predictions:")
+        for r in jl_results
+            @printf("  %.4f  %-12s  =>  %s\n", r.score, r.token, r.sequence)
+        end
+
+        # Run Python MLM
+        py_script_mlm = """
+import torch, json
+from transformers import DistilBertForMaskedLM, DistilBertTokenizer
+model_path = "$model_path"
+text = "$mlm_text"
+tokenizer = DistilBertTokenizer.from_pretrained(model_path)
+model = DistilBertForMaskedLM.from_pretrained(model_path)
+model.eval()
+inputs = tokenizer(text, return_tensors="pt")
+mask_idx = (inputs["input_ids"] == tokenizer.mask_token_id).nonzero(as_tuple=True)[1].item()
+with torch.no_grad():
+    logits = model(**inputs).logits
+mask_logits = logits[0, mask_idx]
+probs = torch.softmax(mask_logits, dim=0)
+top5 = torch.topk(probs, 5)
+results = []
+for score, tid in zip(top5.values, top5.indices):
+    results.append({"score": float(score.item()), "token": tokenizer.decode([tid.item()]).strip(), "token_id": int(tid.item())})
+print(json.dumps(results))
+"""
+        py_cmd_mlm = `$(get_python_cmd()) -c $py_script_mlm`
+        py_out_mlm = try
+            read(py_cmd_mlm, String)
+        catch e
+            println("❌ Python MLM script failed: $e")
+            mlm_pass = false
+            @goto mlm_done
+        end
+
+        py_mlm_results = JSON.parse(py_out_mlm)
+
+        println("\n[Python] Top-5 predictions:")
+        for r in py_mlm_results
+            @printf("  %.4f  %-12s\n", r["score"], r["token"])
+        end
+
+        # Compare rankings (token order must match)
+        jl_tokens = [r.token for r in jl_results]
+        # Python token IDs are 0-based, Julia 1-based
+        py_tokens = [r["token"] for r in py_mlm_results]
+
+        println("\n[Comparison]")
+        if jl_tokens == py_tokens
+            println("✅ Token ranking matches exactly.")
+        else
+            println("⚠️  Token ranking differs:")
+            println("   Julia:  $jl_tokens")
+            println("   Python: $py_tokens")
+            # A ranking difference is OK as long as scores are close
+        end
+
+        # Compare scores
+        max_score_diff = 0.0
+        for i in 1:min(length(jl_results), length(py_mlm_results))
+            sdiff = abs(jl_results[i].score - py_mlm_results[i]["score"])
+            max_score_diff = max(max_score_diff, sdiff)
+        end
+        @printf("Max score difference: %.2e\n", max_score_diff)
+
+        if max_score_diff < 1e-3
+            println("✅ PASS (Score diff < 1e-3)")
+        elseif max_score_diff < 1e-1
+            println("⚠️  PASS (Relaxed, score diff < 0.1)")
+        else
+            println("❌ FAIL (Score diff > 0.1)")
+            mlm_pass = false
+        end
+    end
+
+    @label mlm_done
+
     println("\n" * "="^60)
     println("FINAL VERDICT")
     println("="^60)
 
-    if tokenizer_pass && model_pass
+    if tokenizer_pass && model_pass && mlm_pass
         println("✅ VALIDATION SUCCESSFUL")
         return true
     else

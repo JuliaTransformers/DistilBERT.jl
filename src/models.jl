@@ -1,4 +1,4 @@
-export DistilBertModel, DistilBertForSequenceClassification, DistilBertForTokenClassification, DistilBertForQuestionAnswering
+export DistilBertModel, DistilBertForSequenceClassification, DistilBertForTokenClassification, DistilBertForQuestionAnswering, DistilBertForMaskedLM
 
 """
     DistilBertModel
@@ -148,3 +148,55 @@ function (m::DistilBertForQuestionAnswering)(input_ids::AbstractMatrix{<:Integer
     end_logits = logits[2, :, :]    # (seq_len, batch_size)
     return (start_logits=start_logits, end_logits=end_logits)
 end
+
+"""
+    DistilBertForMaskedLM
+
+DistilBERT model with a masked language modeling head on top.
+"""
+struct DistilBertForMaskedLM
+    distilbert::DistilBertModel
+    vocab_transform::Dense       # dim → dim (with gelu activation)
+    vocab_layer_norm::LayerNorm  # dim
+    vocab_projector_bias::Vector{Float32}  # (vocab_size,)
+end
+
+Flux.@layer DistilBertForMaskedLM trainable = (distilbert, vocab_transform, vocab_layer_norm)
+
+"""
+    DistilBertForMaskedLM(config)
+
+Create a masked language modeling model.
+"""
+function DistilBertForMaskedLM(config::DistilBertConfig)
+    return DistilBertForMaskedLM(
+        DistilBertModel(config),
+        Dense(config.dim => config.dim, gelu),
+        LayerNorm(config.dim; eps=config.layer_norm_eps),
+        zeros(Float32, config.vocab_size)
+    )
+end
+
+function (m::DistilBertForMaskedLM)(input_ids::AbstractMatrix{<:Integer}; mask::Union{Nothing,AbstractMatrix}=nothing)
+    hidden_states = m.distilbert(input_ids; mask=mask)  # (dim, seq_len, batch_size)
+
+    # MLM head
+    prediction_logits = m.vocab_transform(hidden_states)       # (dim, seq_len, batch_size)
+    prediction_logits = m.vocab_layer_norm(prediction_logits)  # (dim, seq_len, batch_size)
+
+    # Tied projection: use word_embeddings weight (stored as (dim, vocab_size) in Flux)
+    # We need (vocab_size, dim) × (dim, ...) = (vocab_size, ...)
+    embed_weight = m.distilbert.embeddings.word_embeddings.weight  # (dim, vocab_size)
+
+    # Reshape for batched matmul: (dim, seq_len, batch) → multiply by embed_weight'
+    d, s, b = size(prediction_logits)
+    flat = reshape(prediction_logits, d, s * b)          # (dim, seq_len*batch)
+    logits_flat = embed_weight' * flat                    # (vocab_size, seq_len*batch)
+    logits = reshape(logits_flat, :, s, b)                # (vocab_size, seq_len, batch)
+
+    # Add bias
+    logits = logits .+ m.vocab_projector_bias
+
+    return logits  # (vocab_size, seq_len, batch_size)
+end
+

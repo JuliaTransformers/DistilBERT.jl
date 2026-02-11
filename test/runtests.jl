@@ -120,6 +120,13 @@ using Flux
             @test size(result.start_logits) == (seq_len, batch_size)
             @test size(result.end_logits) == (seq_len, batch_size)
         end
+
+        # Masked Language Modeling
+        @testset "Masked Language Modeling" begin
+            model = DistilBertForMaskedLM(config)
+            logits = model(input_ids)
+            @test size(logits) == (config.vocab_size, seq_len, batch_size)
+        end
     end
 
     @testset "Gradient Tests" begin

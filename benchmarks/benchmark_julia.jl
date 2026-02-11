@@ -2,7 +2,7 @@
 using Flux
 using DistilBERT
 using BenchmarkTools
-using MKL
+# using MKL
 using Statistics
 using Printf
 using LinearAlgebra

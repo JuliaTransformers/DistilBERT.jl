@@ -1,7 +1,7 @@
 name = "DistilBERT"
 uuid = "4a3a1c16-5378-477a-8c70-c7b46c0a0f4d"
-authors = ["AbrJA <abraham.jaimes.mx@gmail.com>"]
 version = "0.1.0"
+authors = ["AbrJA <abraham.jaimes.mx@gmail.com>"]
 
 [deps]
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
@@ -12,12 +12,12 @@ SafeTensors = "eeda0dda-7046-4914-a807-2495fc7abb89"
 Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 
 [compat]
-julia = "^1.10"
-Flux = "^0.14"
+Flux = "^0.14, 0.16"
 JSON = "^1"
 NNlib = "^0.9"
 Pickle = "^0.3"
 SafeTensors = "^1"
+julia = "^1.10"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

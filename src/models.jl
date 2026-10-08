@@ -28,8 +28,11 @@ end
 function (m::DistilBertModel)(input_ids::AbstractMatrix{<:Integer}; mask::Union{Nothing,AbstractMatrix}=nothing)
     x = m.embeddings(input_ids)
 
+    # Convert mask to NNlib format ONCE; all 6 blocks reuse the same array.
+    nnlib_mask = _make_nnlib_mask(mask)
+
     for block in m.transformer
-        x = block(x; mask=mask)
+        x = block(x; mask=nnlib_mask)
     end
 
     return x

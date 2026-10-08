@@ -1,129 +1,170 @@
 export load_model
 
 """
-    load_model(path; init_random=false)
-    load_model(::Type{DistilBertForMaskedLM}, path; init_random=false)
-    load_model(::Type{DistilBertForSequenceClassification}, path; num_labels=2, init_random=false)
-    load_model(::Type{DistilBertForTokenClassification}, path; num_labels, init_random=false)
-    load_model(::Type{DistilBertForQuestionAnswering}, path; init_random=false)
+    load_model(source; init_random=false)
+    load_model(::Type{DistilBertForMaskedLM}, source; init_random=false)
+    load_model(::Type{DistilBertForSequenceClassification}, source; num_labels=2, init_random=false)
+    load_model(::Type{DistilBertForTokenClassification}, source; num_labels, init_random=false)
+    load_model(::Type{DistilBertForQuestionAnswering}, source; init_random=false)
 
-Load a pre-trained DistilBERT model from a directory.
-The directory must contain:
-- `config.json`: Model configuration
-- `model.safetensors` (preferred) or `pytorch_model.bin`: Model weights
+Load a pre-trained DistilBERT model.
+`source` can be:
+- A **local directory** containing `config.json` + `model.safetensors`
+- A **HuggingFace Hub model ID** (e.g. `"distilbert-base-uncased"`) — requires
+  `TransformersDownloads.jl` to be in the active environment.
 
-# Arguments
-- `path::String`: Path to the directory containing model files
-- `init_random::Bool=false`: If true, return a randomly initialized model when no weights are found.
+Weight format priority: SafeTensors > PyTorch `.bin` (Pickle).
 
 # Examples
 ```julia
-# Base model
-model = load_model("path/to/model")
+# From a local directory:
+model = load_model("models/distilbert-base-uncased")
 
-# Sequence classification (e.g., sentiment analysis)
-model = load_model(DistilBertForSequenceClassification, "path/to/model"; num_labels=2)
+# Directly from HuggingFace Hub (downloads and caches automatically):
+model = load_model("distilbert-base-uncased")
 
-# Question answering
-model = load_model(DistilBertForQuestionAnswering, "path/to/model")
+# Sequence classification:
+model = load_model(DistilBertForSequenceClassification, "distilbert-base-uncased"; num_labels=2)
 ```
 """
-function load_model(path::String; init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(path; init_random)
+function load_model(source::String; init_random::Bool=false)
+    config, state_dict = _load_config_and_weights(source; init_random)
     model = DistilBertModel(config)
-
-    if state_dict !== nothing
-        load_weights!(model, state_dict)
-    end
-
+    state_dict !== nothing && load_weights!(model, state_dict)
     return model
 end
 
-function load_model(::Type{DistilBertForSequenceClassification}, path::String;
+function load_model(::Type{DistilBertForSequenceClassification}, source::String;
     num_labels::Int=2, init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(path; init_random)
+    config, state_dict = _load_config_and_weights(source; init_random)
     model = DistilBertForSequenceClassification(config, num_labels)
-
-    if state_dict !== nothing
-        load_weights!(model, state_dict)
-    end
-
+    state_dict !== nothing && load_weights!(model, state_dict)
     return model
 end
 
-function load_model(::Type{DistilBertForTokenClassification}, path::String;
+function load_model(::Type{DistilBertForTokenClassification}, source::String;
     num_labels::Int, init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(path; init_random)
+    config, state_dict = _load_config_and_weights(source; init_random)
     model = DistilBertForTokenClassification(config, num_labels)
-
-    if state_dict !== nothing
-        load_weights!(model, state_dict)
-    end
-
+    state_dict !== nothing && load_weights!(model, state_dict)
     return model
 end
 
-function load_model(::Type{DistilBertForQuestionAnswering}, path::String;
+function load_model(::Type{DistilBertForQuestionAnswering}, source::String;
     init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(path; init_random)
+    config, state_dict = _load_config_and_weights(source; init_random)
     model = DistilBertForQuestionAnswering(config)
-
-    if state_dict !== nothing
-        load_weights!(model, state_dict)
-    end
-
+    state_dict !== nothing && load_weights!(model, state_dict)
     return model
 end
 
 # ============================================================================
 # Internal: Config & Weight Loading
+# Delegates to TransformersDownloads.jl when it is loaded (preferred), or
+# falls back to direct file access for fully local / offline use.
 # ============================================================================
 
-function _load_config_and_weights(path::String; init_random::Bool=false)
-    config_path = joinpath(path, "config.json")
-    if !isfile(config_path)
-        error("config.json not found in $path")
+"""
+    _parse_distilbert_config(config_dict) -> DistilBertConfig
+
+Convert a raw config dictionary (from JSON) to a `DistilBertConfig`.
+Isolated here so both the local-path and HF-Hub code paths share the logic.
+"""
+function _parse_distilbert_config(config_dict::Dict)
+    DistilBertConfig(
+        vocab_size             = get(config_dict, "vocab_size",             30522),
+        dim                    = get(config_dict, "dim",                    768),
+        n_layers               = get(config_dict, "n_layers",               6),
+        n_heads                = get(config_dict, "n_heads",                12),
+        hidden_dim             = get(config_dict, "hidden_dim",             3072),
+        dropout                = Float32(get(config_dict, "dropout",                0.1)),
+        max_position_embeddings= get(config_dict, "max_position_embeddings",512),
+        initializer_range      = Float32(get(config_dict, "initializer_range",     0.02)),
+        qa_dropout             = Float32(get(config_dict, "qa_dropout",             0.1)),
+        seq_classif_dropout    = Float32(get(config_dict, "seq_classif_dropout",    0.2)),
+        layer_norm_eps         = Float32(get(config_dict, "layer_norm_eps",         1e-12)),
+    )
+end
+
+"""
+    _load_config_and_weights(source; init_random=false)
+
+Load config and state dict from `source` (local dir or HF Hub ID).
+
+Uses `TransformersDownloads.jl` when available (enables HF Hub, caching,
+sharded safetensors). Falls back to direct file I/O for offline / local use.
+"""
+function _load_config_and_weights(source::String; init_random::Bool=false)
+    # ── Try TransformersDownloads (Hub + local unified) ──────────────────────
+    if _td_available()
+        return _load_via_td(source; init_random)
     end
 
-    config_dict = JSON.parsefile(config_path)
-
-    config = DistilBertConfig(
-        vocab_size=get(config_dict, "vocab_size", 30522),
-        dim=get(config_dict, "dim", 768),
-        n_layers=get(config_dict, "n_layers", 6),
-        n_heads=get(config_dict, "n_heads", 12),
-        hidden_dim=get(config_dict, "hidden_dim", 3072),
-        dropout=Float32(get(config_dict, "dropout", 0.1)),
-        max_position_embeddings=get(config_dict, "max_position_embeddings", 512),
-        initializer_range=Float32(get(config_dict, "initializer_range", 0.02)),
-        qa_dropout=Float32(get(config_dict, "qa_dropout", 0.1)),
-        seq_classif_dropout=Float32(get(config_dict, "seq_classif_dropout", 0.2)),
-        layer_norm_eps=Float32(get(config_dict, "layer_norm_eps", 1e-12))
+    # ── Fallback: local directory only ───────────────────────────────────────
+    isdir(source) || error(
+        "\"$source\" is not a local directory and TransformersDownloads.jl is not loaded.\n" *
+        "For HuggingFace Hub support, add TransformersDownloads to your environment:\n" *
+        "  Pkg.develop(path=\"../TransformersDownloads.jl\")\n" *
+        "  using TransformersDownloads"
     )
 
-    # Load weights
-    safetensors_path = joinpath(path, "model.safetensors")
-    pytorch_bin_path = joinpath(path, "pytorch_model.bin")
+    config_path = joinpath(source, "config.json")
+    isfile(config_path) || error("config.json not found in $source")
+    config_dict = JSON.parsefile(config_path)
+    config = _parse_distilbert_config(config_dict)
 
-    state_dict = nothing
+    if init_random
+        @warn "init_random=true: returning randomly initialized model (no weights loaded)."
+        return config, nothing
+    end
 
-    if isfile(safetensors_path)
-        @debug "Loading weights from $safetensors_path using SafeTensors..."
-        state_dict = SafeTensors.load_safetensors(safetensors_path)
-    elseif isfile(pytorch_bin_path)
-        @debug "Loading weights from $pytorch_bin_path using Pickle..."
-        state_dict = open(pytorch_bin_path, "r") do f
+    state_dict = _load_weights_local(source)
+    return config, state_dict
+end
+
+"""Return true if TransformersDownloads is loaded in the current session."""
+_td_available() = isdefined(Main, :TransformersDownloads) ||
+                  haskey(Base.loaded_modules,
+                    Base.PkgId(Base.UUID("83ccf3dd-bfab-49d6-97f1-f49acc47b240"),
+                               "TransformersDownloads"))
+
+function _load_via_td(source::String; init_random::Bool=false)
+    # Access TransformersDownloads through the loaded-modules table
+    TD = Base.loaded_modules[
+        Base.PkgId(Base.UUID("83ccf3dd-bfab-49d6-97f1-f49acc47b240"), "TransformersDownloads")
+    ]
+    config_dict = TD.load_config(source)
+    config      = _parse_distilbert_config(config_dict)
+
+    if init_random
+        @warn "init_random=true: returning randomly initialized model."
+        return config, nothing
+    end
+
+    @debug "Loading weights via TransformersDownloads for: $source"
+    state_dict = TD.load_weights(source)
+    return config, state_dict
+end
+
+"""Direct file-based weight loading (offline / no TransformersDownloads)."""
+function _load_weights_local(dir::String)
+    st_path  = joinpath(dir, "model.safetensors")
+    bin_path = joinpath(dir, "pytorch_model.bin")
+
+    if isfile(st_path)
+        @debug "Loading weights: $st_path (SafeTensors)"
+        return SafeTensors.load_safetensors(st_path)
+    elseif isfile(bin_path)
+        @debug "Loading weights: $bin_path (Pickle)"
+        return open(bin_path, "r") do f
             Pickle.load(f)
         end
     else
-        if init_random
-            @warn "No model weights found in $path. Returning randomly initialized model."
-        else
-            error("No model weights found in $path. Pass init_random=true to use random weights.")
-        end
+        error(
+            "No weights found in $dir.\n" *
+            "Expected: model.safetensors  or  pytorch_model.bin"
+        )
     end
-
-    return config, state_dict
 end
 
 # ============================================================================

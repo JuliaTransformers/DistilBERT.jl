@@ -14,5 +14,6 @@ include("models.jl")
 include("tokenizer.jl")
 include("loading.jl")
 include("inference.jl")
+include("performance.jl")
 
 end # module DistilBERT

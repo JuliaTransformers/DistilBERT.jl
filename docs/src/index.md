@@ -56,9 +56,18 @@ AbstractPooling
 CLSPooling
 MeanPooling
 MaxPooling
-cls_pooling
-mean_pooling
-max_pooling
+DistilBERT.cls_pooling
+DistilBERT.mean_pooling
+DistilBERT.max_pooling
+```
+
+### Truncation
+
+```@docs
+AbstractTruncation
+LongestFirst
+OnlyFirst
+OnlySecond
 ```
 
 ### Task-Specific Heads

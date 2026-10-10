@@ -269,6 +269,31 @@ end
         @test_throws ErrorException embed(model, tokenizer, "hello world"; pooling=:bogus)
     end
 
+    @testset "Pooling property (random masks vs naive reference)" begin
+        config = DistilBertConfig(dim=8, n_heads=2, hidden_dim=16, n_layers=1, vocab_size=20)
+        model = DistilBertModel(config)
+        Flux.testmode!(model)
+
+        for _ in 1:5
+            s, b = 7, 3
+            x = rand(1:20, s, b)
+            mask = Float32.(rand(Bool, s, b))
+            mask[1, :] .= 1.0f0  # at least one valid token per column
+            out = model(x; mask=mask)
+            @test !any(isnan, out)
+
+            ref_mean = zeros(Float32, 8, b)
+            ref_max = zeros(Float32, 8, b)
+            for j in 1:b
+                cols = findall(!iszero, mask[:, j])
+                ref_mean[:, j] = vec(sum(out[:, cols, j], dims=2)) ./ length(cols)
+                ref_max[:, j] = vec(maximum(out[:, cols, j], dims=2))
+            end
+            @test DistilBERT.mean_pooling(out, mask) ≈ ref_mean atol=1f-5
+            @test DistilBERT.max_pooling(out, mask) ≈ ref_max atol=1f-4
+        end
+    end
+
     @testset "Tokenizer source handling" begin
         dir = mktempdir()
         open(joinpath(dir, "vocab.txt"), "w") do f
@@ -509,10 +534,15 @@ end
                 end
 
                 @testset "to_bfloat16 preserves CuArray device" begin
-                    gm = DistilBERT.to_gpu(model)
-                    gb = DistilBERT.to_bfloat16(gm)
-                    w = gb.embeddings.word_embeddings.weight
-                    @test w isa CuArray{Core.BFloat16}
+                    if CUDA.capability(CUDA.device()) >= v"8.0"
+                        gm = DistilBERT.to_gpu(model)
+                        gb = DistilBERT.to_bfloat16(gm)
+                        w = gb.embeddings.word_embeddings.weight
+                        @test w isa CuArray{Core.BFloat16}
+                    else
+                        # bf16 conversion codegen requires sm_80 (Ampere)+
+                        @test_skip "GPU compute capability < 8.0"
+                    end
                 end
             else
                 @test_skip "CUDA not functional on this machine"

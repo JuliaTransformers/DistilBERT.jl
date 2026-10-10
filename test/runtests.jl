@@ -140,6 +140,93 @@ end
         end
     end
 
+    @testset "Type Stability" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+        model = DistilBertModel(config)
+        Flux.testmode!(model)
+
+        x = rand(1:100, 10, 2)
+        mask = ones(Float32, 10, 2)
+
+        out_no_mask = @inferred model(x)
+        @test out_no_mask isa Array{Float32,3}
+
+        out_mask = @inferred model(x; mask=mask)
+        @test out_mask isa Array{Float32,3}
+
+        seq = DistilBertForSequenceClassification(config, 3)
+        tok = DistilBertForTokenClassification(config, 5)
+        qa = DistilBertForQuestionAnswering(config)
+        mlm = DistilBertForMaskedLM(config)
+        Flux.testmode!(seq)
+        Flux.testmode!(tok)
+        Flux.testmode!(qa)
+        Flux.testmode!(mlm)
+
+        @test (@inferred seq(x; mask=mask)) isa Matrix{Float32}
+        @test (@inferred tok(x; mask=mask)) isa Array{Float32,3}
+        qa_out = @inferred qa(x; mask=mask)
+        @test qa_out.start_logits isa AbstractMatrix{Float32}
+        @test qa_out.end_logits isa AbstractMatrix{Float32}
+        @test (@inferred mlm(x; mask=mask)) isa Array{Float32,3}
+    end
+
+    @testset "Pooling Strategies (enum)" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+        model = DistilBertModel(config)
+        Flux.testmode!(model)
+
+        dir = mktempdir()
+        open(joinpath(dir, "vocab.txt"), "w") do f
+            for t in ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "hello", "world"]
+                println(f, t)
+            end
+        end
+        tokenizer = WordPieceTokenizer(dir)
+
+        single_cls = embed(model, tokenizer, "hello world"; pooling=CLSPooling)
+        single_mean = embed(model, tokenizer, "hello world"; pooling=MeanPooling)
+        single_max = embed(model, tokenizer, "hello world"; pooling=MaxPooling)
+        @test length(single_cls) == 64
+        @test length(single_mean) == 64
+        @test length(single_max) == 64
+
+        batch = embed(model, tokenizer, ["hello", "world"]; pooling=MeanPooling)
+        @test size(batch) == (64, 2)
+
+        # Legacy Symbol API still works (deprecated)
+        sym_cls = @test_deprecated embed(model, tokenizer, "hello world"; pooling=:cls)
+        sym_mean = @test_deprecated embed(model, tokenizer, "hello world"; pooling=:mean)
+        @test sym_cls == single_cls
+        @test sym_mean == single_mean
+
+        @test_throws ErrorException embed(model, tokenizer, "hello world"; pooling=:bogus)
+    end
+
+    @testset "Tokenizer source handling" begin
+        dir = mktempdir()
+        open(joinpath(dir, "vocab.txt"), "w") do f
+            for t in ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "hello"]
+                println(f, t)
+            end
+        end
+
+        # Directory source resolves vocab.txt
+        tok_dir = WordPieceTokenizer(dir)
+        @test tokenize(tok_dir, "hello") == ["hello"]
+
+        # Direct file source still works
+        tok_file = WordPieceTokenizer(joinpath(dir, "vocab.txt"))
+        @test tokenize(tok_file, "hello") == ["hello"]
+
+        # Unknown source without TransformersDownloads errors with guidance
+        if !DistilBERT._td_available()
+            @test_throws ErrorException WordPieceTokenizer("definitely-not-a-real-hf-model-id")
+        end
+
+        rm(dir; recursive=true)
+    end
+
     @testset "Gradient Tests" begin
         config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
 
@@ -213,7 +300,7 @@ end
             @test eltype(w) === BFloat16
             @test w isa Matrix{BFloat16}
             # layer norm / dense parameters converted too
-            @test eltype(m16.transformer.layers[1].attention.q_lin.weight) === BFloat16
+            @test eltype(m16.transformer[1].attention.q_lin.weight) === BFloat16
         end
 
         @testset "to_bfloat16 idempotent" begin

@@ -1,4 +1,5 @@
 export predict, embed, unmask
+export AbstractPooling, CLSPooling, MeanPooling, MaxPooling
 
 const MASK_PATTERN = r"\[MASK\]"i
 
@@ -134,12 +135,56 @@ Compute max of token embeddings, excluding padding tokens.
 - `Matrix{Float32}`: Shape (dim, batch_size)
 """
 function max_pooling(output::AbstractArray{<:Real,3}, attention_mask::AbstractMatrix{<:Real})
-    # Set padding positions to very negative values so they don't affect max
+    # Set padding positions to a very negative value so they don't affect max
     mask_expanded = reshape(attention_mask, 1, size(attention_mask)...)
-    masked_output = output .* mask_expanded .+ (1.0f0 .- mask_expanded) .* -1.0f9
+    neg = convert(eltype(output), -1f9)
+    masked_output = ifelse.(mask_expanded .!= 0, output, neg)
 
     return dropdims(maximum(masked_output, dims=2), dims=2)
 end
+
+
+# ============================================================================
+# Pooling Strategies
+# ============================================================================
+
+"""
+    AbstractPooling
+
+Supertype for pooling strategies accepted by [`embed`](@ref):
+
+- [`CLSPooling`](@ref): take the `[CLS]` token representation.
+- [`MeanPooling`](@ref): mean over non-padding tokens.
+- [`MaxPooling`](@ref): elementwise max over non-padding tokens.
+
+Pass the *type* as the `pooling` keyword, e.g. `pooling=MeanPooling`.
+Passing a `Symbol` (`:cls`, `:mean`, `:max`) is deprecated.
+"""
+abstract type AbstractPooling end
+
+"""Pooling strategy: take the `[CLS]` token representation."""
+struct CLSPooling <: AbstractPooling end
+
+"""Pooling strategy: mean over non-padding tokens."""
+struct MeanPooling <: AbstractPooling end
+
+"""Pooling strategy: elementwise max over non-padding tokens."""
+struct MaxPooling <: AbstractPooling end
+
+const _POOLING_FROM_SYMBOL = Dict(:cls => CLSPooling, :mean => MeanPooling, :max => MaxPooling)
+
+_resolve_pooling(::Type{P}) where {P<:AbstractPooling} = P
+function _resolve_pooling(pooling::Symbol)
+    Base.depwarn(
+        "`pooling=$pooling` is deprecated; pass `CLSPooling`, `MeanPooling`, or `MaxPooling`.",
+        :embed)
+    haskey(_POOLING_FROM_SYMBOL, pooling) && return _POOLING_FROM_SYMBOL[pooling]
+    error("Unknown pooling strategy: $pooling. Use CLSPooling, MeanPooling, or MaxPooling.")
+end
+
+_pool(output, mask, ::Type{CLSPooling})  = cls_pooling(output)
+_pool(output, mask, ::Type{MeanPooling}) = mean_pooling(output, mask)
+_pool(output, mask, ::Type{MaxPooling})  = max_pooling(output, mask)
 
 
 # ============================================================================
@@ -155,7 +200,9 @@ Get sentence embedding for a single text.
 - `model::DistilBertModel`: The DistilBERT model
 - `tokenizer::WordPieceTokenizer`: The tokenizer
 - `text::String`: Input text
-- `pooling::Symbol`: Pooling strategy - `:cls`, `:mean`, or `:max` (default: `:cls`)
+- `pooling`: Pooling strategy - `CLSPooling` (default), `MeanPooling`, or
+  `MaxPooling`. Legacy `Symbol`s (`:cls`, `:mean`, `:max`) still work but are
+  deprecated.
 
 # Returns
 - `AbstractVector{Float32}`: Sentence embedding of shape (dim,), on the same
@@ -166,24 +213,18 @@ Get sentence embedding for a single text.
 model = load_model("path/to/model")
 tokenizer = WordPieceTokenizer("path/to/vocab.txt")
 Flux.testmode!(model)
-embedding = embed(model, tokenizer, "Hello world!"; pooling=:mean)
+embedding = embed(model, tokenizer, "Hello world!"; pooling=MeanPooling)
 ```
 """
-function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String; pooling::Symbol=:cls)
+function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String;
+    pooling=CLSPooling)
+    p = _resolve_pooling(pooling)
     output = predict(model, tokenizer, text)
 
-    if pooling == :cls
-        return vec(cls_pooling(output))
-    elseif pooling == :mean
-        # For single text, all tokens are valid
-        mask = _to_device(ones(Float32, size(output, 2), 1), output)
-        return vec(mean_pooling(output, mask))
-    elseif pooling == :max
-        mask = _to_device(ones(Float32, size(output, 2), 1), output)
-        return vec(max_pooling(output, mask))
-    else
-        error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
-    end
+    p === CLSPooling && return vec(cls_pooling(output))
+    # For single text, all tokens are valid
+    mask = _to_device(ones(Float32, size(output, 2), 1), output)
+    return vec(_pool(output, mask, p))
 end
 
 """
@@ -195,7 +236,9 @@ Get sentence embeddings for multiple texts.
 - `model::DistilBertModel`: The DistilBERT model
 - `tokenizer::WordPieceTokenizer`: The tokenizer
 - `texts::Vector{String}`: Input texts
-- `pooling::Symbol`: Pooling strategy - `:cls`, `:mean`, or `:max` (default: `:cls`)
+- `pooling`: Pooling strategy - `CLSPooling` (default), `MeanPooling`, or
+  `MaxPooling`. Legacy `Symbol`s (`:cls`, `:mean`, `:max`) still work but are
+  deprecated.
 - `max_length::Int`: Maximum sequence length (default: 512)
 
 # Returns
@@ -207,26 +250,19 @@ Get sentence embeddings for multiple texts.
 model = load_model("path/to/model")
 tokenizer = WordPieceTokenizer("path/to/vocab.txt")
 Flux.testmode!(model)
-embeddings = embed(model, tokenizer, texts; pooling=:mean)
+embeddings = embed(model, tokenizer, texts; pooling=MeanPooling)
 ```
 """
 function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, texts::Vector{String};
-    pooling::Symbol=:cls, max_length::Int=512)
+    pooling=CLSPooling, max_length::Int=512)
+    p = _resolve_pooling(pooling)
     input_ids, attention_mask = encode_batch(tokenizer, texts; max_length=max_length)
     ref = model.embeddings.word_embeddings.weight
     ids = _to_device(input_ids, ref)
     mask = _to_device(attention_mask, ref)
     output = model(ids; mask=mask)
 
-    if pooling == :cls
-        return cls_pooling(output)
-    elseif pooling == :mean
-        return mean_pooling(output, mask)
-    elseif pooling == :max
-        return max_pooling(output, mask)
-    else
-        error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
-    end
+    return _pool(output, mask, p)
 end
 
 

@@ -1,8 +1,8 @@
-struct Embeddings
-    word_embeddings::Embedding
-    position_embeddings::Embedding
-    layer_norm::LayerNorm
-    dropout::Dropout
+struct Embeddings{WE,PE,LN,D}
+    word_embeddings::WE
+    position_embeddings::PE
+    layer_norm::LN
+    dropout::D
 end
 
 Flux.@layer Embeddings
@@ -29,15 +29,15 @@ function (m::Embeddings)(input_ids::AbstractMatrix{<:Integer})
     return m.dropout(embeddings)
 end
 
-struct MultiHeadSelfAttention
+struct MultiHeadSelfAttention{Q,K,V,O,D}
     n_heads::Int
     dim::Int
     head_dim::Int
-    q_lin::Dense
-    k_lin::Dense
-    v_lin::Dense
-    out_lin::Dense
-    dropout::Dropout
+    q_lin::Q
+    k_lin::K
+    v_lin::V
+    out_lin::O
+    dropout::D
 end
 
 Flux.@layer MultiHeadSelfAttention trainable = (q_lin, k_lin, v_lin, out_lin)
@@ -97,10 +97,10 @@ function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3};
     return m.out_lin(context)
 end
 
-struct FeedForward
-    lin1::Dense
-    lin2::Dense
-    dropout::Dropout
+struct FeedForward{L1,L2,D}
+    lin1::L1
+    lin2::L2
+    dropout::D
 end
 
 Flux.@layer FeedForward
@@ -118,11 +118,11 @@ function (m::FeedForward)(x::AbstractArray{<:Real,3})
 end
 
 
-struct TransformerBlock
-    attention::MultiHeadSelfAttention
-    sa_layer_norm::LayerNorm
-    ffn::FeedForward
-    output_layer_norm::LayerNorm
+struct TransformerBlock{A,SN,F,ON}
+    attention::A
+    sa_layer_norm::SN
+    ffn::F
+    output_layer_norm::ON
 end
 
 Flux.@layer TransformerBlock

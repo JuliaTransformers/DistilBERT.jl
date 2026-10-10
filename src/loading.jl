@@ -122,18 +122,26 @@ function _load_config_and_weights(source::String; init_random::Bool=false)
     return config, state_dict
 end
 
-"""Return true if TransformersDownloads is loaded in the current session."""
-_td_available() = isdefined(Main, :TransformersDownloads) ||
-                  haskey(Base.loaded_modules,
-                    Base.PkgId(Base.UUID("83ccf3dd-bfab-49d6-97f1-f49acc47b240"),
-                               "TransformersDownloads"))
+# ----------------------------------------------------------------------------
+# TransformersDownloads integration hooks
+#
+# The core package only declares these functions; ext/DistilBERTTDExt.jl
+# implements them when TransformersDownloads.jl is loaded. Using
+# `Base.get_extension` keeps the core free of `Main`/UUID lookups and makes
+# the dependency act as a proper package extension.
+# ----------------------------------------------------------------------------
+
+"""Return true if the TransformersDownloads extension is loaded."""
+function _td_available()
+    return Base.get_extension(@__MODULE__, :DistilBERTTDExt) !== nothing
+end
+
+function _td_load_config end
+function _td_load_weights end
+function _td_vocab end
 
 function _load_via_td(source::String; init_random::Bool=false)
-    # Access TransformersDownloads through the loaded-modules table
-    TD = Base.loaded_modules[
-        Base.PkgId(Base.UUID("83ccf3dd-bfab-49d6-97f1-f49acc47b240"), "TransformersDownloads")
-    ]
-    config_dict = TD.load_config(source)
+    config_dict = _td_load_config(source)
     config      = _parse_distilbert_config(config_dict)
 
     if init_random
@@ -142,7 +150,7 @@ function _load_via_td(source::String; init_random::Bool=false)
     end
 
     @debug "Loading weights via TransformersDownloads for: $source"
-    state_dict = TD.load_weights(source)
+    state_dict = _td_load_weights(source)
     return config, state_dict
 end
 

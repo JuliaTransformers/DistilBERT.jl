@@ -352,28 +352,37 @@ Changes vs. today:
 
 ### Phase 0 — Emergency fixes (ship before anything else)
 
-- [ ] **Fix the extension overwrite** (§2.1). Without this, the package cannot be
+- [x] **Fix the extension overwrite** (§2.1). Without this, the package cannot be
       used by anyone with CUDA.jl in their environment. Remove `predict`/`embed`
       methods from `DistilBERTCUDAExt`; make core methods device-agnostic.
-- [ ] **Fix `to_bfloat16` device drop** (§3.5) and add a regression test that
+- [x] **Fix `to_bfloat16` device drop** (§3.5) and add a regression test that
       round-trips `to_bfloat16` on a `CuArray`.
-- [ ] **Add `vocab_projector_bias` to `trainable`** (§3.1) and assert
+- [x] **Add `vocab_projector_bias` to `trainable`** (§3.1) and assert
       `num_parameters(mlm)` ≈ HF's published parameter count.
-- [ ] **CI: load the CUDA extension** (`using CUDA; using DistilBERT`) in a
+- [x] **CI: load the CUDA extension** (`using CUDA; using DistilBERT`) in a
       no-GPU-safe way (wrap in `CUDA.functional()` guard) so precompile failures
       become CI failures.
 
+> Progress: Phase 0 landed in `5185998`. GPU tests ran on a CUDA-capable
+> machine; extension precompiles cleanly.
+
 ### Phase 1 — Type stability & API hygiene (target: v0.2.0)
 
-- [ ] `DistilBertModel{N}` with `NTuple{N,TransformerBlock}` (§2.2); verify with
+- [x] `DistilBertModel{N}` with `NTuple{N,TransformerBlock}` (§2.2); verify with
       `@inferred` tests on the forward pass (CPU and, where available, GPU).
-- [ ] TransformersDownloads extension (§2.3) + `compat` entry; delete
+      Extended to parameterize every layer/head struct — abstract field types
+      were the remaining source of `Body::ANY`.
+- [x] TransformersDownloads extension (§2.3) + `compat` entry; delete
       `_td_available` and the UUID lookups from both `loading.jl` and `tokenizer.jl`.
-- [ ] Device contract for `predict`/`embed` documented in docstrings (§2.4).
-- [ ] Enum-based `pooling`/`truncation`/`padding` (§2.5) with deprecation shims
-      for `Symbol` inputs (`@deprecate`).
+      `_td_available` is now `Base.get_extension`-based; `ext/DistilBERTTDExt.jl` added.
+- [x] Device contract for `predict`/`embed` documented in docstrings (§2.4).
+- [x] Enum-based `pooling` (§2.5) with `Base.depwarn` shim for `Symbol` inputs.
+      (Tokenizer `truncation`/`padding` enums deferred to Phase 2.)
 - [ ] Re-run full parity suite (CPU + GPU) after each change above — the existing
       validation scripts make these refactors safe.
+      *Blocked locally: `models/` and the Python venv are not present in this
+      checkout; run `validation/cpu|gpu` on a machine with weights before release.*
+
 
 ### Phase 2 — Tokenizer fidelity & performance
 

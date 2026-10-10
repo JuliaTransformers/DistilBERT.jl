@@ -30,37 +30,24 @@ struct WordPieceTokenizer
 end
 
 """
-    WordPieceTokenizer(vocab_file; kwargs...)
+    WordPieceTokenizer(source; kwargs...)
 
-Create a WordPieceTokenizer from a vocabulary file path.
+Create a WordPieceTokenizer from:
+
+- a direct `vocab.txt` file path,
+- a local model directory containing `vocab.txt`, or
+- a HuggingFace Hub model ID (requires `TransformersDownloads.jl`).
 
 # Arguments
-- `vocab_file::String`: Path to the vocabulary file (one token per line)
-"""
-function WordPieceTokenizer(vocab_file::String;
-    do_lower_case=true,
-    unk_token="[UNK]",
-    sep_token="[SEP]",
-    pad_token="[PAD]",
-    cls_token="[CLS]",
-    mask_token="[MASK]")
-    vocab = load_vocab(vocab_file)
-    ids_to_tokens = Dict(v => k for (k, v) in vocab)
-    return WordPieceTokenizer(vocab, ids_to_tokens, unk_token, sep_token, pad_token, cls_token, mask_token, do_lower_case)
-end
-
-"""
-    WordPieceTokenizer(source; kwargs...)  where source is a directory or HF Hub ID
-
-Load a WordPieceTokenizer from a model directory (containing `vocab.txt`) or
-directly from a HuggingFace Hub model ID.
-
-When `source` is a directory, looks for `vocab.txt` inside it.
-When `source` is an HF Hub ID, delegates to `TransformersDownloads.hf_vocab`.
+- `source::String`: Path to the vocabulary file or model directory, or an HF Hub ID.
+- `do_lower_case::Bool=true`: Whether to lowercase input text.
 
 # Examples
 ```julia
-# From a local directory:
+# From a vocab file:
+tok = WordPieceTokenizer("models/distilbert-base-uncased/vocab.txt")
+
+# From a model directory:
 tok = WordPieceTokenizer("models/distilbert-base-uncased")
 
 # From HuggingFace Hub (requires TransformersDownloads.jl):
@@ -68,19 +55,27 @@ using TransformersDownloads
 tok = WordPieceTokenizer("distilbert-base-uncased")
 ```
 """
-function WordPieceTokenizer(source::String, ::Val{:model}; kwargs...)
-    vocab_path = if isdir(source)
+function WordPieceTokenizer(source::String;
+    do_lower_case=true,
+    unk_token="[UNK]",
+    sep_token="[SEP]",
+    pad_token="[PAD]",
+    cls_token="[CLS]",
+    mask_token="[MASK]")
+    vocab_path = if isfile(source)
+        source
+    elseif isdir(source)
         joinpath(source, "vocab.txt")
     elseif _td_available()
-        TD = Base.loaded_modules[
-            Base.PkgId(Base.UUID("83ccf3dd-bfab-49d6-97f1-f49acc47b240"), "TransformersDownloads")
-        ]
-        TD.hf_vocab(source)
+        _td_vocab(source)
     else
-        error("\"$source\" is not a directory. Load TransformersDownloads.jl for HF Hub support.")
+        error("\"$source\" is not a file or directory. Load TransformersDownloads.jl for HF Hub support.")
     end
     isfile(vocab_path) || error("vocab.txt not found in $source")
-    return WordPieceTokenizer(vocab_path; kwargs...)
+
+    vocab = load_vocab(vocab_path)
+    ids_to_tokens = Dict(v => k for (k, v) in vocab)
+    return WordPieceTokenizer(vocab, ids_to_tokens, unk_token, sep_token, pad_token, cls_token, mask_token, do_lower_case)
 end
 
 """

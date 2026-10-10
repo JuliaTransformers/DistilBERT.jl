@@ -34,6 +34,7 @@ using DistilBERT
 using TransformersValidation
 using Flux
 using Printf
+using JSON
 
 # ============================================================================
 # Configuration

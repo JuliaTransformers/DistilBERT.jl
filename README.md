@@ -126,16 +126,19 @@ Hardware: Linux, 4 Threads. Comparison vs PyTorch (Hugging Face).
 To ensure the implementation matches the reference PyTorch implementation, run the parity validation script:
 
 ```bash
+# One-time: instantiate the benchmark environment and hook up the local package
+julia --project=benchmarks -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+
 # Verify against a 'small' model (fast)
-julia --project=. benchmarks/validate_parity.jl small
+julia --project=benchmarks benchmarks/validate_parity.jl small
 
 # Verify against a 'big' model
-julia --project=. benchmarks/validate_parity.jl big
+julia --project=benchmarks benchmarks/validate_parity.jl big
 ```
 
 **Requirements:**
 - A Python environment (`.venv`) with `torch` and `transformers` installed is required for running the comparison scripts.
-- To use MKL for best performance in Julia: `using MKL` (ensure it's in your project dependencies).
+- To use MKL for best performance in Julia: `using MKL` (ensure it's in the benchmark project dependencies).
 
 ## 🖥️ GPU Usage (CUDA)
 
@@ -172,7 +175,7 @@ model_f16 = to_half(to_gpu(model))   # Float16 (Tensor Cores)
 - `src/tokenizer.jl`: WordPiece tokenizer implementation.
 - `ext/DistilBERTCUDAExt.jl`: CUDA device extension.
 - `ext/DistilBERTTDExt.jl`: TransformersDownloads (HF Hub) extension.
-- `benchmarks/`: Performance benchmarking scripts (`benchmark_julia.jl`, `validate_parity.jl`).
+- `benchmarks/`: Performance benchmarking scripts (`benchmark_julia.jl`, `benchmark_python.py`, `validate_parity.jl`).
 - `validation/`: CPU/GPU parity harness against HuggingFace (requires Python).
 - `REVIEW.md`: Architecture audit and production-readiness roadmap.
 - `models/`: Directory structure for storing downloaded model weights (`config.json`, `vocab.txt`, `model.safetensors`).

@@ -111,7 +111,7 @@ vocab_path = joinpath(model_dir, "vocab.txt")
 tokenizer  = WordPieceTokenizer(vocab_path)
 
 println("\nModel: dim=$(base_model.config.dim), layers=$(base_model.config.n_layers)")
-println("Params: $(ValidationUtils.num_parameters(base_model) ÷ 1_000_000)M\n")
+println("Params: $(num_parameters(base_model) ÷ 1_000_000)M\n")
 
 # ---------------------------------------------------------------------------
 # Step 5: Julia inference

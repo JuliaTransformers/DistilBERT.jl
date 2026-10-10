@@ -423,11 +423,11 @@ Changes vs. today:
       JSON.jl 1.4+, so **all local-directory loading was broken**; signature now
       accepts `AbstractDict`. Duplicated `load_model` methods collapsed into one
       generic method + `_build_model` barriers.
-- [ ] Benchmark suite: `@benchmarkable` groups with `BenchmarkTools.jl` in a
-      benchmark-specific environment; publish regression thresholds in CI
-      (`--track-allocation=user` on the smoke test at minimum).
+- [x] Benchmark suite: a dedicated `benchmarks/Project.toml` now declares
+      BenchmarkTools/Flux/JSON/etc., and the README documents the
+      `--project=benchmarks` workflow. (CI regression thresholds still open.)
 - [x] Documentation: README GPU/device-contract section, corrected pooling API
-      and stale benchmark references; docs pages cover pooling/MLM/device/precision
+      and benchmark instructions; docs pages cover pooling/MLM/device/precision
       APIs. Export-collision note added to README.
 - [x] Decide export policy (§2.6): generic names kept for 0.1.0 compatibility;
       collision risk documented in the README (namespacing is a 1.0 breaking change).

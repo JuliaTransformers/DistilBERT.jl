@@ -400,6 +400,7 @@ Encode multiple texts into a batch matrix with padding and attention mask.
 """
 function encode_batch(tokenizer::WordPieceTokenizer, texts::Vector{String};
     max_length::Int=512, padding::Symbol=:longest)
+    isempty(texts) && throw(ArgumentError("texts must be non-empty"))
     padding in (:longest, :max_length) || throw(ArgumentError(
         "padding must be :longest or :max_length, got :$padding"))
 

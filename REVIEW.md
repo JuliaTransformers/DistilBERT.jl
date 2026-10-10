@@ -408,13 +408,15 @@ Changes vs. today:
 
 ### Phase 3 — Test & packaging hardening (production release)
 
-- [ ] Test coverage: gradients for **all four** task heads (today only base model
-      and seq-classification are gradient-tested); loading from both safetensors
-      and pickle; truncation/padding edge matrices (`max_length=0`, all-pad batch);
-      `==`/`show` round-trips.
-- [ ] Property-based tests: random configs (dim/n_heads divisibility,
-      `n_heads | dim` validation), random masks vs. `mean_pooling` analytic
-      reference, tokenizer round-trip `decode ∘ encode ≈ id` on ASCII corpus.
+- [x] Test coverage: gradients for **all four** task heads; `show` round-trips;
+      truncation/padding edge cases; empty-batch rejection. (Loading from
+      safetensors/pickle still untested — needs fixture files.)
+- [x] Property-based tests: config validation matrix (`dim ÷ n_heads`, ranges);
+      `@inferred` forward/head checks. (Random-mask analytic pooling test still
+      open.)
+- [x] **Aqua.jl quality gates** (`test_all`, persistent_tasks disabled due to an
+      upstream env bug): no ambiguities, no piracies, no stale deps, compat
+      entries for all deps/extras, no undefined exports.
 - [ ] Benchmark suite: `@benchmarkable` groups with `BenchmarkTools.jl` in a
       benchmark-specific environment; publish regression thresholds in CI
       (`--track-allocation=user` on the smoke test at minimum).
@@ -425,10 +427,8 @@ Changes vs. today:
 - [ ] Decide export policy (§2.6): keep or namespace `encode`/`tokenize`/
       `predict`/`embed`. At minimum document conflicts in README.
 - [ ] Git hygiene: `Manifest.toml` currently committed — standard practice for
-      libraries is to gitignore it (keep for the `validation` sub-environment if
-      desired). Remove `using Unicode` duplication (`src/DistilBERT.jl:8` +
-      `src/tokenizer.jl:2`), and drop the `Unicode` dep if accent stripping isn't
-      added (only `lowercase` is used today).
+      libraries is to gitignore it; remove duplicated `using Unicode`
+      (`src/DistilBERT.jl:8` + `src/tokenizer.jl:2`).
 
 ### Definition of done (production)
 

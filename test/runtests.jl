@@ -2,6 +2,7 @@ using Test
 using DistilBERT
 using Flux
 using BFloat16s
+using Aqua
 
 # Loading CUDA (when available) must load the package extension cleanly.
 # This guards against method-overwriting regressions in ext/.
@@ -20,6 +21,26 @@ end
         @test config.n_layers == 6
         @test config.n_heads == 12
         @test config.vocab_size == 30522
+
+        # Float literals are converted to Float32 fields
+        @test DistilBertConfig(dropout=0.1).dropout === 0.1f0
+    end
+
+    @testset "Config validation" begin
+        @test DistilBertConfig(dim=64, n_heads=4) isa DistilBertConfig
+        @test_throws ArgumentError DistilBertConfig(dim=10, n_heads=3)
+        @test_throws ArgumentError DistilBertConfig(dim=0)
+        @test_throws ArgumentError DistilBertConfig(n_layers=0)
+        @test_throws ArgumentError DistilBertConfig(n_heads=0)
+        @test_throws ArgumentError DistilBertConfig(hidden_dim=0)
+        @test_throws ArgumentError DistilBertConfig(vocab_size=0)
+        @test_throws ArgumentError DistilBertConfig(max_position_embeddings=0)
+        @test_throws ArgumentError DistilBertConfig(dropout=1.0)
+        @test_throws ArgumentError DistilBertConfig(dropout=-0.1)
+        @test_throws ArgumentError DistilBertConfig(qa_dropout=1.0)
+        @test_throws ArgumentError DistilBertConfig(seq_classif_dropout=1.0)
+        @test_throws ArgumentError DistilBertConfig(initializer_range=0.0)
+        @test_throws ArgumentError DistilBertConfig(layer_norm_eps=0.0)
     end
 
     @testset "Forward Pass Shape" begin
@@ -506,5 +527,37 @@ end
         end
 
         rm(vocab_file)
+    end
+
+    @testset "API robustness" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=1, vocab_size=100)
+        model = DistilBertModel(config)
+        @test occursin("DistilBertModel", sprint(show, model))
+        @test occursin("DistilBertConfig", sprint(show, config))
+
+        dir = mktempdir()
+        open(joinpath(dir, "vocab.txt"), "w") do f
+            for t in ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+                println(f, t)
+            end
+        end
+        tok = WordPieceTokenizer(dir)
+
+        # Empty batches are rejected with a clear error
+        @test_throws ArgumentError encode_batch(tok, String[])
+
+        # max_length=1 truncation leaves room for [SEP]
+        ids = encode(tok, "a much longer sentence than one token";
+            max_length=1, truncation=true)
+        @test length(ids) == 1
+        @test ids[1] == tok.vocab["[SEP]"]
+
+        rm(dir; recursive=true)
+    end
+
+    @testset "Aqua quality" begin
+        Aqua.test_all(DistilBERT;
+            # Env-dependent check: fails to locate Project.toml in some deps
+            persistent_tasks=false)
     end
 end

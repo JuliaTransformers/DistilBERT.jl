@@ -703,6 +703,8 @@ end
         rm(dir; recursive=true)
     end
 
+    include("test_parity.jl")
+
     @testset "Aqua quality" begin
         Aqua.test_all(DistilBERT;
             # Env-dependent check: fails to locate Project.toml in some deps

@@ -106,6 +106,25 @@ function _strip_accents(text::String)
     return filter(c -> Base.Unicode.category_abbrev(c) != "Mn", normalized)
 end
 
+"""
+    _is_cjk(c::Char) -> Bool
+
+`true` for CJK unified ideographs and their extensions, matching HuggingFace
+`BasicTokenizer._is_chinese_char`. Such characters are always split into their
+own tokens.
+"""
+function _is_cjk(c::Char)
+    cp = UInt32(c)
+    return (0x4E00 <= cp <= 0x9FFF) ||
+           (0x3400 <= cp <= 0x4DBF) ||
+           (0x20000 <= cp <= 0x2A6DF) ||
+           (0x2A700 <= cp <= 0x2B73F) ||
+           (0x2B740 <= cp <= 0x2B81F) ||
+           (0x2B820 <= cp <= 0x2CEAF) ||
+           (0xF900 <= cp <= 0xFAFF) ||
+           (0x2F800 <= cp <= 0x2FA1F)
+end
+
 function basic_tokenize(text::String, do_lower_case::Bool)
     if do_lower_case
         # HF `BertTokenizer` strips accents and lowercases when do_lower_case=true
@@ -120,7 +139,7 @@ function basic_tokenize(text::String, do_lower_case::Bool)
             if position(buffer) > 0
                 push!(tokens, String(take!(buffer)))
             end
-        elseif ispunct(char)
+        elseif ispunct(char) || _is_cjk(char)
             if position(buffer) > 0
                 push!(tokens, String(take!(buffer)))
             end

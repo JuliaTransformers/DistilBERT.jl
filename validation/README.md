@@ -3,6 +3,28 @@
 This folder contains parity validation scripts that verify the Julia DistilBERT
 implementation produces numerically equivalent outputs to HuggingFace Transformers (PyTorch).
 
+## Recommended: hermetic fixtures (no Python at test time)
+
+`validation/fixtures/generate.py` creates a tiny deterministic DistilBERT with
+golden PyTorch outputs committed under `test/fixtures/tiny-distilbert/`. The
+regular Julia test suite (`test/test_parity.jl`) compares tokenizer output,
+hidden states, and MLM logits against these goldens with `atol = 1e-5` — no
+Python, no network, runs on every PR.
+
+```bash
+# Regenerate with the pinned environment (see validation/fixtures/README.md)
+/tmp/distilbert-parity/bin/python validation/fixtures/generate.py
+```
+
+A scheduled CI job (`.github/workflows/validation.yml`) regenerates the
+fixtures with the locked `requirements.lock` and fails if the committed files
+drift.
+
+## Live full-size validation (manual, requires Python)
+
+The scripts below validate full-size models (CPU/GPU, Float16) and are meant to
+be run manually on a machine with a Python environment and local weights.
+
 ## Structure
 
 ```

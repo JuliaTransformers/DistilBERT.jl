@@ -123,7 +123,14 @@ Hardware: Linux, 4 Threads. Comparison vs PyTorch (Hugging Face).
 
 ## ✅ Verification
 
-To ensure the implementation matches the reference PyTorch implementation, run the parity validation script:
+Parity against HuggingFace Transformers is checked **hermetically in the test
+suite**: `test/test_parity.jl` compares tokenization, hidden states, and MLM
+logits against committed golden outputs from a tiny deterministic model
+(`test/fixtures/tiny-distilbert/`) with `atol = 1e-5`. Regenerate the goldens
+with `validation/fixtures/generate.py` (pinned environment); a scheduled CI job
+fails if they drift.
+
+For full-size models, run the live validation scripts:
 
 ```bash
 # One-time: instantiate the benchmark environment and hook up the local package

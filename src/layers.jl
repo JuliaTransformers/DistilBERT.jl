@@ -20,7 +20,9 @@ function (m::Embeddings)(input_ids::AbstractMatrix{<:Integer})
     seq_length = size(input_ids, 1)
 
     words_embeddings = m.word_embeddings(input_ids)           # (dim, seq_len, batch_size)
-    position_embeddings = m.position_embeddings(1:seq_length) # (dim, seq_len)
+    # Position ids follow the word-embedding weights' device (GPU-safe gather)
+    position_ids = _to_device(1:seq_length, m.position_embeddings.weight)
+    position_embeddings = m.position_embeddings(position_ids) # (dim, seq_len)
 
     # Broadcasting adds position_embeddings over the batch dimension
     embeddings = m.layer_norm(words_embeddings .+ position_embeddings)

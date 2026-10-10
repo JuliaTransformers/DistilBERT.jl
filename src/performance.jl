@@ -8,6 +8,16 @@ export prepare_inputs, num_parameters, num_parameters_mib
 # ============================================================================
 
 """
+    _to_device(x, ref::AbstractArray)
+
+Move `x` onto the same device as the reference array `ref` (typically a model
+weight). The CPU fallback is the identity; the CUDA extension overloads this
+for `CuArray` references. Inference entry points (`predict`, `embed`) and the
+`Embeddings` layer use this so inputs always match the model's device.
+"""
+_to_device(x, ref::AbstractArray) = x
+
+"""
     to_gpu(model)
 
 Move a DistilBERT model and all its parameters to the GPU.
@@ -99,12 +109,17 @@ Convert model parameters to `BFloat16`.
 
 BFloat16 has the same exponent range as Float32 (more numerically stable than Float16),
 supported on CUDA Ampere (30xx / A100) and newer hardware.
+
+The conversion is device-preserving: conversion is done with broadcasting,
+so a `CuArray` stays on the GPU.
 """
 function to_bfloat16(model)
-    return Flux.fmap(model) do x
-        x isa AbstractArray{Float32} ? convert(Array{BFloat16}, x) : x
-    end
+    return Flux.fmap(_to_bfloat16, model)
 end
+
+_to_bfloat16(x::AbstractArray{BFloat16}) = x
+_to_bfloat16(x::AbstractArray{<:AbstractFloat}) = BFloat16.(x)
+_to_bfloat16(x) = x
 
 """
     to_float32(model)

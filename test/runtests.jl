@@ -1,6 +1,17 @@
 using Test
 using DistilBERT
 using Flux
+using BFloat16s
+
+# Loading CUDA (when available) must load the package extension cleanly.
+# This guards against method-overwriting regressions in ext/.
+const HAS_CUDA = try
+    @eval using CUDA
+    true
+catch err
+    @warn "CUDA.jl could not be loaded; CUDA-specific tests will be skipped." exception = err
+    false
+end
 
 @testset "DistilBERT.jl" begin
     @testset "Config" begin
@@ -153,6 +164,126 @@ using Flux
             end
 
             @test grads[1] !== nothing
+        end
+
+        @testset "TokenClassification gradients" begin
+            model = DistilBertForTokenClassification(config, 5)
+            x = rand(1:100, 10, 2)
+
+            grads = Flux.gradient(model) do m
+                sum(m(x))
+            end
+
+            @test grads[1] !== nothing
+        end
+
+        @testset "QuestionAnswering gradients" begin
+            model = DistilBertForQuestionAnswering(config)
+            x = rand(1:100, 10, 2)
+
+            grads = Flux.gradient(model) do m
+                r = m(x)
+                sum(r.start_logits) + sum(r.end_logits)
+            end
+
+            @test grads[1] !== nothing
+        end
+
+        @testset "MaskedLM gradients (incl. tied bias)" begin
+            model = DistilBertForMaskedLM(config)
+            x = rand(1:100, 10, 2)
+
+            grads = Flux.gradient(model) do m
+                sum(m(x))
+            end
+
+            @test grads[1] !== nothing
+            # The projection bias must receive a gradient (was excluded from trainables)
+            @test grads[1].vocab_projector_bias !== nothing
+        end
+    end
+
+    @testset "Precision Utilities" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+        model = DistilBertModel(config)
+
+        @testset "to_bfloat16 preserves array type and device" begin
+            m16 = DistilBERT.to_bfloat16(model)
+            w = m16.embeddings.word_embeddings.weight
+            @test eltype(w) === BFloat16
+            @test w isa Matrix{BFloat16}
+            # layer norm / dense parameters converted too
+            @test eltype(m16.transformer.layers[1].attention.q_lin.weight) === BFloat16
+        end
+
+        @testset "to_bfloat16 idempotent" begin
+            m16 = DistilBERT.to_bfloat16(model)
+            m16b = DistilBERT.to_bfloat16(m16)
+            @test m16b.embeddings.word_embeddings.weight === m16.embeddings.word_embeddings.weight
+        end
+
+        @testset "num_parameters counts MLM projection bias" begin
+            mlm = DistilBertForMaskedLM(config)
+            # vocab_projector_bias must be part of the trainable parameter tree
+            @test any(p -> p === mlm.vocab_projector_bias, Flux.params(mlm))
+            @test DistilBERT.num_parameters(mlm) >=
+                  DistilBERT.num_parameters(mlm.distilbert) + length(mlm.vocab_projector_bias)
+        end
+    end
+
+    @testset "CUDA extension" begin
+        if !HAS_CUDA
+            @test_skip "CUDA.jl not installed"
+        else
+            # Loading CUDA must load the weakdep extension without overwrite errors
+            @test Base.get_extension(DistilBERT, :DistilBERTCUDAExt) !== nothing
+
+            if CUDA.functional()
+                config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+                model = DistilBertModel(config)
+                Flux.testmode!(model)
+
+                @testset "to_gpu / on_gpu / to_cpu" begin
+                    gm = DistilBERT.to_gpu(model)
+                    @test DistilBERT.on_gpu(gm)
+                    @test gm.embeddings.word_embeddings.weight isa CuArray
+                    cm = DistilBERT.to_cpu(gm)
+                    @test !DistilBERT.on_gpu(cm)
+                end
+
+                @testset "device-aware predict/embed" begin
+                    vocab_file = tempname() * ".txt"
+                    open(vocab_file, "w") do f
+                        for t in ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "hello", "world"]
+                            println(f, t)
+                        end
+                    end
+                    tokenizer = WordPieceTokenizer(vocab_file)
+                    gm = DistilBERT.to_gpu(model)
+
+                    out = DistilBERT.predict(gm, tokenizer, "hello world")
+                    @test out isa CuArray
+
+                    emb = DistilBERT.embed(gm, tokenizer, "hello world"; pooling=:mean)
+                    @test emb isa CuArray
+                    @test length(emb) == 64
+
+                    emb_batch = DistilBERT.embed(gm, tokenizer, ["hello", "world"]; pooling=:mean)
+                    @test emb_batch isa CuArray
+                    @test size(emb_batch) == (64, 2)
+
+                    rm(vocab_file)
+                end
+
+                @testset "to_bfloat16 preserves CuArray device" begin
+                    gm = DistilBERT.to_gpu(model)
+                    gb = DistilBERT.to_bfloat16(gm)
+                    w = gb.embeddings.word_embeddings.weight
+                    @test w isa CuArray{BFloat16}
+                end
+            else
+                @test_skip "CUDA not functional on this machine"
+            end
         end
     end
 

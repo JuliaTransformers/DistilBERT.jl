@@ -7,3 +7,7 @@ Manifest.toml
 .venv
 zzz/
 models/
+
+# test/experiment logs
+logs/
+*.log

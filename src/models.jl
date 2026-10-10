@@ -164,7 +164,7 @@ struct DistilBertForMaskedLM
     vocab_projector_bias::Vector{Float32}  # (vocab_size,)
 end
 
-Flux.@layer DistilBertForMaskedLM trainable = (distilbert, vocab_transform, vocab_layer_norm)
+Flux.@layer DistilBertForMaskedLM trainable = (distilbert, vocab_transform, vocab_layer_norm, vocab_projector_bias)
 
 """
     DistilBertForMaskedLM(config)

@@ -79,102 +79,25 @@ function DistilBERT.gpu_memory_info()
 end
 
 # ============================================================================
-# CUDA-aware High-Level Predict
+# Device-Aware Input Transfer
 # ============================================================================
-# Override predict/embed with device-aware versions so callers can just pass
-# `device=gpu` instead of manually converting inputs.
+# The core `predict`/`embed` API is device-agnostic: it asks `_to_device` to
+# place inputs on the same device as the model's parameters. This extension
+# supplies the CUDA implementation. No core method is ever overwritten.
 
 """
-    DistilBERT.predict(model, tokenizer, text; device=Flux.gpu)
-    DistilBERT.predict(model, tokenizer, texts; device=Flux.gpu, max_length=512)
+    DistilBERT._to_device(x, ref::CuArray) -> CuArray | x
 
-GPU-accelerated single-text or batch inference.
-
-The model must already reside on the GPU (call `to_gpu(model)` first).
-`device` is applied to the input tensors; use `Flux.gpu` (default) for CUDA.
-
-# Example
-```julia
-using CUDA
-model_gpu = DistilBERT.to_gpu(load_model("path/to/model"))
-Flux.testmode!(model_gpu)
-output = DistilBERT.predict(model_gpu, tokenizer, "Hello world!")
-```
+Move `x` to the CUDA device when the reference array `ref` (a model weight)
+lives on the GPU, otherwise return `x` unchanged. Integer arrays become
+`CuArray{Int32}` (CUDA embedding kernels require `Int32` indices).
 """
-function DistilBERT.predict(
-    model::DistilBERT.DistilBertModel,
-    tokenizer::DistilBERT.WordPieceTokenizer,
-    text::String;
-    device=Flux.gpu
-)
-    input_ids    = DistilBERT.encode(tokenizer, text)
-    input_matrix = CuArray{Int32}(reshape(input_ids, :, 1))
-    return model(input_matrix)
+function DistilBERT._to_device(x::AbstractArray{<:Integer}, ref::CuArray)
+    return CuArray{Int32}(x)
 end
 
-function DistilBERT.predict(
-    model::DistilBERT.DistilBertModel,
-    tokenizer::DistilBERT.WordPieceTokenizer,
-    texts::Vector{String};
-    device=Flux.gpu,
-    max_length::Int=512
-)
-    input_ids, attention_mask = DistilBERT.encode_batch(tokenizer, texts; max_length)
-    cu_ids, cu_mask = DistilBERT.cuda_inputs(input_ids, attention_mask)
-    return model(cu_ids; mask=cu_mask)
-end
-
-"""
-    DistilBERT.embed(model, tokenizer, text; device=Flux.gpu, pooling=:cls)
-    DistilBERT.embed(model, tokenizer, texts; device=Flux.gpu, pooling=:cls, max_length=512)
-
-GPU-accelerated sentence embedding.
-"""
-function DistilBERT.embed(
-    model::DistilBERT.DistilBertModel,
-    tokenizer::DistilBERT.WordPieceTokenizer,
-    text::String;
-    device=Flux.gpu,
-    pooling::Symbol=:cls
-)
-    output = DistilBERT.predict(model, tokenizer, text; device)
-    cpu_output = Array(output)  # bring back to CPU for pooling utilities
-
-    if pooling == :cls
-        return vec(DistilBERT.cls_pooling(cpu_output))
-    elseif pooling == :mean
-        mask = ones(Float32, size(cpu_output, 2), 1)
-        return vec(DistilBERT.mean_pooling(cpu_output, mask))
-    elseif pooling == :max
-        mask = ones(Float32, size(cpu_output, 2), 1)
-        return vec(DistilBERT.max_pooling(cpu_output, mask))
-    else
-        error("Unknown pooling: $pooling. Use :cls, :mean, or :max")
-    end
-end
-
-function DistilBERT.embed(
-    model::DistilBERT.DistilBertModel,
-    tokenizer::DistilBERT.WordPieceTokenizer,
-    texts::Vector{String};
-    device=Flux.gpu,
-    pooling::Symbol=:cls,
-    max_length::Int=512
-)
-    input_ids, attention_mask = DistilBERT.encode_batch(tokenizer, texts; max_length)
-    cu_ids, cu_mask = DistilBERT.cuda_inputs(input_ids, attention_mask)
-    output = model(cu_ids; mask=cu_mask)
-    cpu_output = Array(output)
-
-    if pooling == :cls
-        return DistilBERT.cls_pooling(cpu_output)
-    elseif pooling == :mean
-        return DistilBERT.mean_pooling(cpu_output, attention_mask)
-    elseif pooling == :max
-        return DistilBERT.max_pooling(cpu_output, attention_mask)
-    else
-        error("Unknown pooling: $pooling. Use :cls, :mean, or :max")
-    end
+function DistilBERT._to_device(x::AbstractArray{<:Real}, ref::CuArray)
+    return CuArray{Float32}(x)
 end
 
 end # module DistilBERTCUDAExt

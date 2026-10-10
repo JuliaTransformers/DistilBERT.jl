@@ -1,11 +1,13 @@
 export predict, embed, unmask
 
+const MASK_PATTERN = r"\[MASK\]"i
+
 # ============================================================================
 # High-Level Inference API
 # ============================================================================
 
 """
-    predict(model, tokenizer, text) -> Matrix{Float32}
+    predict(model, tokenizer, text) -> AbstractArray{Float32,3}
 
 Run inference on a single text string.
 
@@ -18,7 +20,9 @@ Run inference on a single text string.
 - `text::String`: Input text
 
 # Returns
-- `output::Array{Float32,3}`: Hidden states of shape (dim, seq_len, 1)
+- `output::AbstractArray{Float32,3}`: Hidden states of shape (dim, seq_len, 1).
+  The output lives on the same device as the model parameters (CPU by default,
+  GPU when the model was moved with `to_gpu`).
 
 # Example
 ```julia
@@ -31,11 +35,12 @@ output = predict(model, tokenizer, "Hello world!")
 function predict(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String)
     input_ids = encode(tokenizer, text)
     input_matrix = reshape(input_ids, :, 1)
-    return model(input_matrix)
+    ref = model.embeddings.word_embeddings.weight
+    return model(_to_device(input_matrix, ref))
 end
 
 """
-    predict(model, tokenizer, texts; max_length=512) -> Matrix{Float32}
+    predict(model, tokenizer, texts; max_length=512) -> AbstractArray{Float32,3}
 
 Run batch inference on multiple texts with automatic padding and masking.
 
@@ -48,7 +53,8 @@ Run batch inference on multiple texts with automatic padding and masking.
 - `max_length::Int`: Maximum sequence length (default: 512)
 
 # Returns
-- `output::Array{Float32,3}`: Hidden states of shape (dim, seq_len, batch_size)
+- `output::AbstractArray{Float32,3}`: Hidden states of shape (dim, seq_len, batch_size),
+  on the same device as the model parameters.
 
 # Example
 ```julia
@@ -61,7 +67,10 @@ output = predict(model, tokenizer, ["Hello world!", "How are you?"])
 function predict(model::DistilBertModel, tokenizer::WordPieceTokenizer,
     texts::Vector{String}; max_length::Int=512)
     input_ids, attention_mask = encode_batch(tokenizer, texts; max_length=max_length)
-    return model(input_ids; mask=attention_mask)
+    ref = model.embeddings.word_embeddings.weight
+    ids = _to_device(input_ids, ref)
+    mask = _to_device(attention_mask, ref)
+    return model(ids; mask=mask)
 end
 
 
@@ -138,7 +147,7 @@ end
 # ============================================================================
 
 """
-    embed(model, tokenizer, text; pooling=:cls) -> Vector{Float32}
+    embed(model, tokenizer, text; pooling=:cls) -> AbstractVector{Float32}
 
 Get sentence embedding for a single text.
 
@@ -149,7 +158,16 @@ Get sentence embedding for a single text.
 - `pooling::Symbol`: Pooling strategy - `:cls`, `:mean`, or `:max` (default: `:cls`)
 
 # Returns
-- `Vector{Float32}`: Sentence embedding of shape (dim,)
+- `AbstractVector{Float32}`: Sentence embedding of shape (dim,), on the same
+  device as the model parameters.
+
+# Example
+```julia
+model = load_model("path/to/model")
+tokenizer = WordPieceTokenizer("path/to/vocab.txt")
+Flux.testmode!(model)
+embedding = embed(model, tokenizer, "Hello world!"; pooling=:mean)
+```
 """
 function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String; pooling::Symbol=:cls)
     output = predict(model, tokenizer, text)
@@ -158,10 +176,10 @@ function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::Stri
         return vec(cls_pooling(output))
     elseif pooling == :mean
         # For single text, all tokens are valid
-        mask = ones(Float32, size(output, 2), 1)
+        mask = _to_device(ones(Float32, size(output, 2), 1), output)
         return vec(mean_pooling(output, mask))
     elseif pooling == :max
-        mask = ones(Float32, size(output, 2), 1)
+        mask = _to_device(ones(Float32, size(output, 2), 1), output)
         return vec(max_pooling(output, mask))
     else
         error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
@@ -169,7 +187,7 @@ function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::Stri
 end
 
 """
-    embed(model, tokenizer, texts; pooling=:cls, max_length=512) -> Matrix{Float32}
+    embed(model, tokenizer, texts; pooling=:cls, max_length=512) -> AbstractArray{Float32,2}
 
 Get sentence embeddings for multiple texts.
 
@@ -181,19 +199,31 @@ Get sentence embeddings for multiple texts.
 - `max_length::Int`: Maximum sequence length (default: 512)
 
 # Returns
-- `Matrix{Float32}`: Sentence embeddings of shape (dim, batch_size)
+- `AbstractArray{Float32,2}`: Sentence embeddings of shape (dim, batch_size),
+  on the same device as the model parameters.
+
+# Example
+```julia
+model = load_model("path/to/model")
+tokenizer = WordPieceTokenizer("path/to/vocab.txt")
+Flux.testmode!(model)
+embeddings = embed(model, tokenizer, texts; pooling=:mean)
+```
 """
 function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, texts::Vector{String};
     pooling::Symbol=:cls, max_length::Int=512)
     input_ids, attention_mask = encode_batch(tokenizer, texts; max_length=max_length)
-    output = model(input_ids; mask=attention_mask)
+    ref = model.embeddings.word_embeddings.weight
+    ids = _to_device(input_ids, ref)
+    mask = _to_device(attention_mask, ref)
+    output = model(ids; mask=mask)
 
     if pooling == :cls
         return cls_pooling(output)
     elseif pooling == :mean
-        return mean_pooling(output, attention_mask)
+        return mean_pooling(output, mask)
     elseif pooling == :max
-        return max_pooling(output, attention_mask)
+        return max_pooling(output, mask)
     else
         error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
     end
@@ -243,8 +273,7 @@ function unmask(model::DistilBertForMaskedLM, tokenizer::WordPieceTokenizer, tex
     sep_id = tokenizer.vocab[tokenizer.sep_token]
 
     # Split text on [MASK] (case-insensitive)
-    mask_pattern = r"\[MASK\]"i
-    segments = split(text, mask_pattern)
+    segments = split(text, MASK_PATTERN)
 
     if length(segments) < 2
         error("No [MASK] token found in input text. Use [MASK] to indicate the token to predict.")

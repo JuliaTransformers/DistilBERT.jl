@@ -6,6 +6,7 @@ using JSON
 using Pickle
 using SafeTensors
 using Unicode
+using BFloat16s
 
 # core components
 include("config.jl")

@@ -4,34 +4,73 @@ export prepare_inputs, num_parameters, num_parameters_mib
 
 # ============================================================================
 # Device Management
-# Full implementations live in ext/DistilBERTCUDAExt.jl when CUDA.jl is loaded.
+#
+# Backend-agnostic: works with any `GPUArraysCore.AbstractGPUArray` (CuArray,
+# ROCArray, MtlArray, ...) without a package extension. `Flux.gpu` selects the
+# active backend (see `Flux.gpu_backend!`). Backend-specific helpers
+# (`cuda_inputs`, `gpu_memory_info`) live in ext/DistilBERTCUDAExt.jl.
 # ============================================================================
 
 """
     _to_device(x, ref::AbstractArray)
 
 Move `x` onto the same device as the reference array `ref` (typically a model
-weight). The CPU fallback is the identity; the CUDA extension overloads this
-for `CuArray` references. Inference entry points (`predict`, `embed`) and the
-`Embeddings` layer use this so inputs always match the model's device.
+weight). For GPU references, `x` is copied into a new `Int32` (integer inputs)
+or `Float32` (real inputs) array of the same backend. Inference entry points
+(`predict`, `embed`) and the `Embeddings` layer use this so inputs always match
+the model's device.
 """
 _to_device(x, ref::AbstractArray) = x
+
+function _to_device(x::AbstractArray{<:Integer}, ref::AbstractGPUArray)
+    return _copy_to_device(ref, Int32, x)
+end
+
+function _to_device(x::AbstractArray{<:Real}, ref::AbstractGPUArray)
+    return _copy_to_device(ref, Float32, x)
+end
+
+function _copy_to_device(ref::AbstractArray, ::Type{T}, x::AbstractArray) where {T}
+    y = similar(ref, T, size(x))
+    # Host-to-device copies need a materialised CPU source (`Array`); GPU
+    # sources are copied device-to-device. This avoids scalar iteration on
+    # ranges and other non-Array host containers (e.g. `1:seq_length`).
+    src = (x isa Array || x isa AbstractGPUArray) ? x : Array(x)
+    copyto!(y, src)
+    return y
+end
 
 """
     to_gpu(model)
 
-Move a DistilBERT model and all its parameters to the GPU.
+Move a model to the active GPU backend (CUDA, AMDGPU, or Metal).
 
-Requires `CUDA.jl` to be loaded (it is a package extension).
+Load the backend package and — if it is not CUDA, Flux's default — select it
+with `Flux.gpu_backend!`. Errors if no backend is active.
+
+Only CUDA is covered by this package's test suite; other GPUArrays.jl backends
+are supported by construction but untested here.
 
 # Example
 ```julia
-using CUDA
+using CUDA, Flux
 model = load_model("path/to/distilbert")
+model_gpu = to_gpu(model)
+
+# AMDGPU / Metal:
+using AMDGPU, Flux
+Flux.gpu_backend!("AMDGPU")   # takes effect after restarting Julia
 model_gpu = to_gpu(model)
 ```
 """
-function to_gpu end
+function to_gpu(model)
+    gpu_model = Flux.gpu(model)
+    on_gpu(gpu_model) || error(
+        "No active GPU backend: `to_gpu` left the model on the CPU.\n" *
+        "Load a GPU backend package (CUDA.jl, AMDGPU.jl, or Metal.jl) and, if " *
+        "it is not CUDA (Flux's default), select it with `Flux.gpu_backend!`.")
+    return gpu_model
+end
 
 """
     to_cpu(model)
@@ -44,13 +83,13 @@ to_cpu(model) = model |> Flux.cpu
     on_gpu(model) -> Bool
 
 Return `true` if the model's parameters currently reside on a GPU device.
-Works without importing CUDA.jl by inspecting the concrete array type.
+Works for any `GPUArraysCore.AbstractGPUArray` backend (CUDA, AMDGPU, Metal)
+without importing the backend package.
 """
 function on_gpu(model)
     ps = Flux.params(model)
     isempty(ps) && return false
-    # GPU arrays are not subtypes of Base.Array (CuArray, ROCArray, etc.)
-    return !(first(ps) isa Array)
+    return first(ps) isa AbstractGPUArray
 end
 
 """
@@ -105,20 +144,20 @@ to_half(model) = Flux.f16(model)
 """
     to_bfloat16(model)
 
-Convert model parameters to `BFloat16`.
+Convert model parameters to `BFloat16` (`Core.BFloat16`, Julia ≥ 1.12).
 
 BFloat16 has the same exponent range as Float32 (more numerically stable than Float16),
 supported on CUDA Ampere (30xx / A100) and newer hardware.
 
 The conversion is device-preserving: conversion is done with broadcasting,
-so a `CuArray` stays on the GPU.
+so a GPU array stays on the GPU.
 """
 function to_bfloat16(model)
     return Flux.fmap(_to_bfloat16, model)
 end
 
-_to_bfloat16(x::AbstractArray{BFloat16}) = x
-_to_bfloat16(x::AbstractArray{<:AbstractFloat}) = BFloat16.(x)
+_to_bfloat16(x::AbstractArray{Core.BFloat16}) = x
+_to_bfloat16(x::AbstractArray{<:AbstractFloat}) = Core.BFloat16.(x)
 _to_bfloat16(x) = x
 
 """

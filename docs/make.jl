@@ -12,5 +12,5 @@ makedocs(
 )
 
 deploydocs(
-    repo="github.com/AbrJA/DistilBERT.jl.git",
+    repo="github.com/JuliaTransformers/DistilBERT.jl.git",
 )

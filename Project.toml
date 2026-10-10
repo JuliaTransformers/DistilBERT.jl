@@ -1,11 +1,11 @@
 name = "DistilBERT"
 uuid = "4a3a1c16-5378-477a-8c70-c7b46c0a0f4d"
 authors = ["AbrJA <abraham.jaimes.mx@gmail.com>"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
-BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+GPUArraysCore = "46192b85-c4d5-4398-a991-12ede77f4527"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 NNlib = "872c559c-99b0-510c-b3b7-b6c96a88d5cd"
 Pickle = "fbb45041-c46e-462f-888f-7c521cafbc2c"
@@ -23,23 +23,25 @@ DistilBERTCUDAExt = "CUDA"
 DistilBERTTDExt = "TransformersDownloads"
 
 [compat]
-julia = "^1.10"
 Aqua = "0.8"
-BFloat16s = "0.5, 0.6"
 CUDA = "^5"
 Flux = "^0.14"
+GPUArraysCore = "0.2"
 JSON = "^1"
 NNlib = "^0.9"
+NPZ = "0.4"
 Pickle = "^0.3"
 SafeTensors = "^1"
 Test = "1"
 TransformersDownloads = "0.1"
 Unicode = "1"
+julia = "1.12"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "CUDA", "Aqua"]
+test = ["Test", "CUDA", "Aqua", "NPZ"]

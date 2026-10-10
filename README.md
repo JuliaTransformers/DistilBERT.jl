@@ -25,7 +25,7 @@ This project implements the DistilBERT architecture from scratch, featuring a cu
 
 ## 📦 Installation
 
-This package is currently a local project. Clone the repository and instantiate the environment:
+This package is currently a local project. **Requires Julia 1.12 or later.** Clone the repository and instantiate the environment:
 
 ```bash
 git clone https://github.com/StartYourStart/DistilBERT.jl.git
@@ -140,12 +140,15 @@ julia --project=benchmarks benchmarks/validate_parity.jl big
 - A Python environment (`.venv`) with `torch` and `transformers` installed is required for running the comparison scripts.
 - To use MKL for best performance in Julia: `using MKL` (ensure it's in the benchmark project dependencies).
 
-## 🖥️ GPU Usage (CUDA)
+## 🖥️ GPU Usage
 
-CUDA support is a package extension — load `CUDA.jl` and the methods appear:
+GPU support is **backend-agnostic**: the device layer works with any
+`GPUArraysCore.AbstractGPUArray`, and `to_gpu`/`predict`/`embed` follow Flux's
+active backend. Load your backend and, if it is not CUDA (Flux's default),
+select it:
 
 ```julia
-using CUDA, DistilBERT, Flux
+using CUDA, DistilBERT, Flux      # CUDA (default)
 
 model = load_model("distilbert-base-uncased")
 Flux.testmode!(model)
@@ -154,14 +157,29 @@ model_gpu = to_gpu(model)            # move parameters to the GPU
 println(on_gpu(model_gpu))           # true
 
 # predict/embed move inputs to the model's device automatically
-output = predict(model_gpu, tokenizer, "Hello world!")   # CuArray
+output = predict(model_gpu, tokenizer, "Hello world!")   # backend array
 embedding = embed(model_gpu, tokenizer, ["hi", "there"]; pooling=MeanPooling)
 
 model_cpu = to_cpu(model_gpu)        # move back
 model_f16 = to_half(to_gpu(model))   # Float16 (Tensor Cores)
 ```
 
+```julia
+using AMDGPU, Flux                   # AMD GPU
+Flux.gpu_backend!("AMDGPU")          # takes effect after restarting Julia
+model_gpu = to_gpu(model)
+
+using Metal, Flux                    # Apple GPU
+Flux.gpu_backend!("Metal")
+model_gpu = to_gpu(model)
+```
+
 `to_bfloat16` preserves the model's device (Ampere+ recommended for BF16).
+
+> [!NOTE]
+> Only CUDA is exercised by this package's test suite. AMDGPU/Metal support is
+> provided by the generic `GPUArraysCore`/`Flux.gpu` path and is untested here.
+> `cuda_inputs` and `gpu_memory_info` are CUDA-only helpers.
 
 ## Project Structure
 

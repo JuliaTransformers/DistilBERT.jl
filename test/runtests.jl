@@ -1,7 +1,7 @@
 using Test
 using DistilBERT
 using Flux
-using BFloat16s
+using GPUArraysCore
 using Aqua
 
 # Loading CUDA (when available) must load the package extension cleanly.
@@ -12,6 +12,23 @@ const HAS_CUDA = try
 catch err
     @warn "CUDA.jl could not be loaded; CUDA-specific tests will be skipped." exception = err
     false
+end
+
+"""Minimal `AbstractGPUArray` stand-in to test backend-agnostic device dispatch."""
+struct FakeGPUArray{T,N,A<:Array{T,N}} <: AbstractGPUArray{T,N}
+    data::A
+end
+Base.size(f::FakeGPUArray) = size(f.data)
+Base.similar(f::FakeGPUArray, ::Type{T}, dims::Dims) where {T} =
+    FakeGPUArray(similar(f.data, T, dims))
+function Base.copyto!(f::FakeGPUArray, src::AbstractArray)
+    copyto!(f.data, src)
+    return f
+end
+# Disambiguate against GPUArrays' `copyto!(::AnyGPUArray, ::Array)`
+function Base.copyto!(f::FakeGPUArray, src::Array)
+    copyto!(f.data, src)
+    return f
 end
 
 """Build a HuggingFace-shaped state dict (batch-first weights) for load_weights! tests."""
@@ -404,10 +421,10 @@ end
         @testset "to_bfloat16 preserves array type and device" begin
             m16 = DistilBERT.to_bfloat16(model)
             w = m16.embeddings.word_embeddings.weight
-            @test eltype(w) === BFloat16
-            @test w isa Matrix{BFloat16}
+            @test eltype(w) === Core.BFloat16
+            @test w isa Matrix{Core.BFloat16}
             # layer norm / dense parameters converted too
-            @test eltype(m16.transformer[1].attention.q_lin.weight) === BFloat16
+            @test eltype(m16.transformer[1].attention.q_lin.weight) === Core.BFloat16
         end
 
         @testset "to_bfloat16 idempotent" begin
@@ -423,6 +440,28 @@ end
             @test DistilBERT.num_parameters(mlm) >=
                   DistilBERT.num_parameters(mlm.distilbert) + length(mlm.vocab_projector_bias)
         end
+    end
+
+    @testset "Backend-agnostic device dispatch" begin
+        ref = FakeGPUArray(zeros(Float32, 4, 4))
+
+        ids = DistilBERT._to_device(reshape(1:5, 5, 1), ref)
+        @test ids isa FakeGPUArray{Int32}
+        @test ids.data == reshape(Int32.(1:5), 5, 1)
+
+        mask = DistilBERT._to_device(ones(Float32, 5, 2), ref)
+        @test mask isa FakeGPUArray{Float32}
+        @test mask.data == ones(Float32, 5, 2)
+
+        # Position ids (a UnitRange) transfer to the reference backend too
+        pos = DistilBERT._to_device(1:4, ref)
+        @test pos isa FakeGPUArray{Int32}
+        @test pos.data == Int32.(1:4)
+
+        # CPU fallback is the identity
+        cpu_ref = zeros(Float32, 2, 2)
+        x = reshape(1:3, 3, 1)
+        @test DistilBERT._to_device(x, cpu_ref) === x
     end
 
     @testset "CUDA extension" begin
@@ -473,7 +512,7 @@ end
                     gm = DistilBERT.to_gpu(model)
                     gb = DistilBERT.to_bfloat16(gm)
                     w = gb.embeddings.word_embeddings.weight
-                    @test w isa CuArray{BFloat16}
+                    @test w isa CuArray{Core.BFloat16}
                 end
             else
                 @test_skip "CUDA not functional on this machine"

@@ -6,7 +6,7 @@ using JSON
 using Pickle
 using SafeTensors
 using Unicode
-using BFloat16s
+using GPUArraysCore
 
 # core components
 include("config.jl")

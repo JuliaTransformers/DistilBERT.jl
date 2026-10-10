@@ -14,7 +14,7 @@ DistilBERT = {path = ".."}
 
 [compat]
 BenchmarkTools = "1"
-DistilBERT = "0.1"
+DistilBERT = "0.2"
 Flux = "0.14"
 JSON = "1"
-julia = "1.10"
+julia = "1.12"

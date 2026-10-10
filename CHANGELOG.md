@@ -12,8 +12,8 @@ Production-readiness pass. **Breaking changes** are marked with ⚠️.
 ### Fixed
 
 - CUDA extension overwrote core `predict`/`embed` methods, breaking extension
-  precompilation for every CUDA user. The extension now only provides
-  CUDA-specific helpers; core inference is device-agnostic.
+  precompilation for every CUDA user. Core inference is now device-agnostic and
+  the extension has been removed entirely (see Removed).
 - `to_bfloat16` silently moved GPU arrays to the CPU and referenced an
   undefined `BFloat16` binding at runtime.
 - GPU position embeddings used a CPU index range against GPU weights,
@@ -54,6 +54,15 @@ Production-readiness pass. **Breaking changes** are marked with ⚠️.
 - `load_model` methods collapsed into one generic method with `_build_model`
   barrier functions.
 - `Manifest.toml` is no longer tracked.
+
+### Removed
+
+- ⚠️ The CUDA extension (`DistilBERTCUDAExt`) and its helpers `cuda_inputs`
+  and `gpu_memory_info`. The device layer is backend-agnostic
+  (`GPUArraysCore` + `Flux.gpu`), `predict`/`embed` transfer inputs
+  automatically, and equivalent one-liners are `CuArray{Int32}(ids)` /
+  `CuArray{Float32}(mask)` and `CUDA.Mem.info()`. CUDA remains a test-only
+  dependency so the generic GPU path is still exercised on real hardware.
 
 ### Added
 

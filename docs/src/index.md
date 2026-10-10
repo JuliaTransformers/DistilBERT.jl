@@ -81,16 +81,15 @@ DistilBertForMaskedLM
 
 ### Device & Precision
 
-CUDA support is provided by a package extension: load `CUDA.jl` to enable it.
-`to_gpu`/`to_cpu` move parameters, and `predict`/`embed` automatically follow
-the model's device.
+GPU support is backend-agnostic: the device layer works with any
+`GPUArraysCore.AbstractGPUArray`, and `to_gpu` uses Flux's active backend
+(CUDA by default; select AMDGPU/Metal with `Flux.gpu_backend!`). `predict` and
+`embed` automatically move inputs to the model's device.
 
 ```@docs
 to_gpu
 to_cpu
 on_gpu
-cuda_inputs
-gpu_memory_info
 to_half
 to_bfloat16
 to_float32

@@ -186,7 +186,10 @@ model_gpu = to_gpu(model)
 > [!NOTE]
 > Only CUDA is exercised by this package's test suite. AMDGPU/Metal support is
 > provided by the generic `GPUArraysCore`/`Flux.gpu` path and is untested here.
-> `cuda_inputs` and `gpu_memory_info` are CUDA-only helpers.
+> There is no backend-specific extension: manually moving inputs is just
+> `CuArray{Int32}(ids)` / `CuArray{Float32}(mask)` (or the equivalent for your
+> backend), and CUDA memory stats are `CUDA.Mem.info()`. `predict`/`embed`
+> transfer inputs automatically.
 
 ## Project Structure
 
@@ -198,9 +201,8 @@ model_gpu = to_gpu(model)
 - `src/inference.jl`: `predict`, `embed`, `unmask`, pooling strategies.
 - `src/performance.jl`: Device/precision utilities.
 - `src/tokenizer.jl`: WordPiece tokenizer implementation.
-- `ext/DistilBERTCUDAExt.jl`: CUDA device extension.
 - `ext/DistilBERTTDExt.jl`: TransformersDownloads (HF Hub) extension.
 - `benchmarks/`: Performance benchmarking scripts (`benchmark_julia.jl`, `benchmark_python.py`, `validate_parity.jl`).
 - `validation/`: CPU/GPU parity harness against HuggingFace (requires Python).
-- `REVIEW.md`: Architecture audit and production-readiness roadmap.
+- `test/fixtures/`: Committed tiny-model parity fixtures (hermetic tests).
 - `models/`: Directory structure for storing downloaded model weights (`config.json`, `vocab.txt`, `model.safetensors`).

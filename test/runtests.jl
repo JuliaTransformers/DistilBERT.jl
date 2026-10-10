@@ -4,8 +4,8 @@ using Flux
 using GPUArraysCore
 using Aqua
 
-# Loading CUDA (when available) must load the package extension cleanly.
-# This guards against method-overwriting regressions in ext/.
+# Loading CUDA (when available) lets us exercise the generic GPU path on real
+# hardware. The package itself has no CUDA-specific code or extension.
 const HAS_CUDA = try
     @eval using CUDA
     true
@@ -489,13 +489,10 @@ end
         @test DistilBERT._to_device(x, cpu_ref) === x
     end
 
-    @testset "CUDA extension" begin
+    @testset "GPU (CUDA hardware)" begin
         if !HAS_CUDA
             @test_skip "CUDA.jl not installed"
         else
-            # Loading CUDA must load the weakdep extension without overwrite errors
-            @test Base.get_extension(DistilBERT, :DistilBERTCUDAExt) !== nothing
-
             if CUDA.functional()
                 config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
                 model = DistilBertModel(config)

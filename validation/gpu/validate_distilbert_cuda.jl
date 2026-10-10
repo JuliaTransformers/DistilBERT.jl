@@ -99,13 +99,16 @@ Flux.testmode!(mlm_model)
 base_gpu = to_gpu(base_model)
 mlm_gpu  = to_gpu(mlm_model)
 
-@info "Models on GPU. Memory: $(round(gpu_memory_info().used_gib, digits=2)) GiB used"
+let (free, total) = CUDA.Mem.info()
+    @info "Models on GPU. Memory: $(round((total - free) / 2^30, digits=2)) GiB used"
+end
 
 # ---------------------------------------------------------------------------
 # Step 5: Float32 GPU inference
 # ---------------------------------------------------------------------------
 @info "Running Float32 GPU inference..."
-jl_ids_gpu, jl_mask_gpu = cuda_inputs(jl_ids_cpu, jl_mask_cpu)
+jl_ids_gpu  = CuArray{Int32}(jl_ids_cpu)
+jl_mask_gpu = CuArray{Float32}(jl_mask_cpu)
 
 jl_hidden_gpu = base_gpu(jl_ids_gpu; mask=jl_mask_gpu)
 jl_logits_gpu = mlm_gpu(jl_ids_gpu;  mask=jl_mask_gpu)
@@ -146,8 +149,8 @@ if CUDA.capability(CUDA.device()) >= VersionNumber(7, 0)
         @test compare_tensors(jl_hidden_f16, py_hidden; atol=1f-1, label="hidden_states (f16)")
     end
 
-    mem = gpu_memory_info()
-    @printf "GPU memory after f16 run: %.2f / %.2f GiB used\n" mem.used_gib mem.total_gib
+    mem_free, mem_total = CUDA.Mem.info()
+    @printf "GPU memory after f16 run: %.2f / %.2f GiB used\n" (mem_total - mem_free) / 2^30 mem_total / 2^30
 else
     @info "Skipping Float16 test: GPU compute capability < 7.0"
 end

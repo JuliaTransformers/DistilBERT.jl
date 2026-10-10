@@ -1,4 +1,4 @@
-export to_gpu, to_cpu, on_gpu, cuda_inputs, gpu_memory_info
+export to_gpu, to_cpu, on_gpu
 export to_half, to_bfloat16, to_float32
 export prepare_inputs, num_parameters, num_parameters_mib
 
@@ -7,8 +7,8 @@ export prepare_inputs, num_parameters, num_parameters_mib
 #
 # Backend-agnostic: works with any `GPUArraysCore.AbstractGPUArray` (CuArray,
 # ROCArray, MtlArray, ...) without a package extension. `Flux.gpu` selects the
-# active backend (see `Flux.gpu_backend!`). Backend-specific helpers
-# (`cuda_inputs`, `gpu_memory_info`) live in ext/DistilBERTCUDAExt.jl.
+# active backend (see `Flux.gpu_backend!`). For backend-specific utilities, use
+# the backend package directly (e.g. `CUDA.Mem.info()` for memory stats).
 # ============================================================================
 
 """
@@ -91,31 +91,6 @@ function on_gpu(model)
     isempty(ps) && return false
     return first(ps) isa AbstractGPUArray
 end
-
-"""
-    cuda_inputs(input_ids, attention_mask=nothing) -> (CuArray, CuArray|Nothing)
-
-Convert CPU integer/float arrays to GPU-ready Int32/Float32 CuArrays.
-
-CUDA embedding kernels require `Int32` indices.
-Requires `CUDA.jl` to be loaded (package extension).
-
-# Example
-```julia
-using CUDA
-ids, mask = cuda_inputs(input_ids, attention_mask)
-output = model_gpu(ids; mask=mask)
-```
-"""
-function cuda_inputs end
-
-"""
-    gpu_memory_info() -> NamedTuple{(:free_gib, :total_gib, :used_gib)}
-
-Return current GPU memory statistics in GiB.
-Requires `CUDA.jl` to be loaded.
-"""
-function gpu_memory_info end
 
 # ============================================================================
 # Precision Utilities
@@ -203,10 +178,12 @@ end
     prepare_inputs(input_ids, attention_mask=nothing) -> (Matrix{Int32}, Matrix{Float32}|Nothing)
 
 Normalize input types for CPU inference:
-- `input_ids` is converted to `Int32` (matches CUDA convention, avoids type mismatch).
+- `input_ids` is converted to `Int32` (matches GPU conventions, avoids type mismatch).
 - `attention_mask` is converted to `Float32` if provided.
 
-For GPU inference use `cuda_inputs` instead.
+For GPU inference, `predict`/`embed` transfer inputs to the model's device
+automatically. To move arrays manually, use `CuArray{Int32}(ids)` /
+`CuArray{Float32}(mask)` (or the equivalent for your backend).
 
 # Example
 ```julia

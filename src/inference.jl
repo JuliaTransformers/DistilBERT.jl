@@ -272,6 +272,10 @@ end
 Predict the masked token(s) in a text, similar to HuggingFace's `pipeline('fill-mask')`.
 Alias for the fill-mask pipeline.
 
+!!! note
+    Only the **first** `[MASK]` position is predicted. Split multi-mask texts
+    into one `unmask` call per mask if you need all predictions.
+
 > **Note:** Call `Flux.testmode!(model)` before inference to disable dropout.
 
 # Arguments

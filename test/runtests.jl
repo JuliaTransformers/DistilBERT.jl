@@ -227,6 +227,64 @@ end
         rm(dir; recursive=true)
     end
 
+    @testset "Tokenizer fidelity & truncation" begin
+        dir = mktempdir()
+        open(joinpath(dir, "vocab.txt"), "w") do f
+            for t in ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]",
+                "cafe", "naive", "test", "##ing", "hello", "world"]
+                println(f, t)
+            end
+        end
+        tok = WordPieceTokenizer(dir)
+
+        # NFKD accent stripping matches HF BertTokenizer (do_lower_case=true)
+        @test tokenize(tok, "café") == ["cafe"]
+        @test tokenize(tok, "naïve") == ["naive"]
+        @test tokenize(tok, "TESTING") == ["test", "##ing"]
+
+        # do_lower_case=false preserves case and accents
+        tok_cs = WordPieceTokenizer(dir; do_lower_case=false)
+        @test tokenize(tok_cs, "TESTING") == ["[UNK]"]
+        @test tokenize(tok_cs, "café") == ["[UNK]"]
+
+        # Multi-byte tokens: WordPiece continuation must slice whole characters
+        uni_dir = mktempdir()
+        open(joinpath(uni_dir, "vocab.txt"), "w") do f
+            for t in ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "café", "##é"]
+                println(f, t)
+            end
+        end
+        tok_uni = WordPieceTokenizer(uni_dir; do_lower_case=false)
+        @test tokenize(tok_uni, "café") == ["café"]
+        @test tokenize(tok_uni, "caféé") == ["café", "##é"]
+        rm(uni_dir; recursive=true)
+
+        # Truncation strategies enforce max_length
+        long_a = "test test test test"
+        long_b = "hello world test test"
+        for strat in (LongestFirst, OnlyFirst, OnlySecond)
+            p = encode_pair(tok, long_a, long_b; max_length=8, truncation=strat)
+            @test length(p.input_ids) == 8
+            @test length(p.token_type_ids) == length(p.input_ids)
+            @test length(p.attention_mask) == length(p.input_ids)
+        end
+
+        # LongestFirst can trim both sequences down to the specials only
+        p0 = encode_pair(tok, long_a, "hello"; max_length=3, truncation=LongestFirst)
+        @test length(p0.input_ids) == 3
+
+        # Deprecated Symbol API matches the enum API
+        psym = @test_deprecated encode_pair(tok, long_a, long_b; max_length=8, truncation=:only_second)
+        penum = encode_pair(tok, long_a, long_b; max_length=8, truncation=OnlySecond)
+        @test psym.input_ids == penum.input_ids
+        @test_throws ErrorException encode_pair(tok, long_a, long_b; max_length=8, truncation=:bogus)
+
+        # encode_batch validates its padding strategy
+        @test_throws ArgumentError encode_batch(tok, ["hello"]; padding=:bogus)
+
+        rm(dir; recursive=true)
+    end
+
     @testset "Gradient Tests" begin
         config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
 

@@ -2,6 +2,7 @@
 using Unicode
 
 export WordPieceTokenizer, tokenize, encode, encode_pair, encode_batch, load_vocab
+export AbstractTruncation, LongestFirst, OnlyFirst, OnlySecond
 
 """
     WordPieceTokenizer
@@ -16,7 +17,8 @@ WordPiece tokenizer compatible with BERT-style tokenization.
 - `pad_token::String`: Padding token (default: "[PAD]")
 - `cls_token::String`: Classification token (default: "[CLS]")
 - `mask_token::String`: Mask token (default: "[MASK]")
-- `do_lower_case::Bool`: Whether to lowercase input text
+- `do_lower_case::Bool`: Whether to lowercase input text and strip accents
+  (matches HuggingFace `BertTokenizer` with `do_lower_case=true`)
 """
 struct WordPieceTokenizer
     vocab::Dict{String,Int}
@@ -96,9 +98,21 @@ function load_vocab(vocab_file::String)
     return vocab
 end
 
+"""
+    _strip_accents(text) -> String
+
+Remove combining marks (Unicode category `Mn`) after NFKD normalization,
+matching HuggingFace `BertTokenizer._run_strip_accents`.
+"""
+function _strip_accents(text::String)
+    normalized = Unicode.normalize(text, :NFKD)
+    return filter(c -> Base.Unicode.category_abbrev(c) != "Mn", normalized)
+end
+
 function basic_tokenize(text::String, do_lower_case::Bool)
     if do_lower_case
-        text = lowercase(text)
+        # HF `BertTokenizer` strips accents and lowercases when do_lower_case=true
+        text = lowercase(_strip_accents(text))
     end
 
     tokens = String[]
@@ -106,11 +120,11 @@ function basic_tokenize(text::String, do_lower_case::Bool)
 
     for char in text
         if isspace(char)
-            if buffer.size > 0
+            if position(buffer) > 0
                 push!(tokens, String(take!(buffer)))
             end
         elseif ispunct(char)
-            if buffer.size > 0
+            if position(buffer) > 0
                 push!(tokens, String(take!(buffer)))
             end
             push!(tokens, string(char))  # More efficient than String([char])
@@ -119,7 +133,7 @@ function basic_tokenize(text::String, do_lower_case::Bool)
         end
     end
 
-    if buffer.size > 0
+    if position(buffer) > 0
         push!(tokens, String(take!(buffer)))
     end
 
@@ -136,19 +150,17 @@ function wordpiece_tokenize(token::String, vocab::Dict{String,Int}, unk_token::S
         found = false
 
         while start_char <= end_char
-            # Get byte indices for the character range
-            start_byte = thisind(token, start_char)
-            end_byte = thisind(token, end_char)
-            if end_char < len
-                end_byte = prevind(token, nextind(token, end_byte))
-            else
-                end_byte = lastindex(token)
-            end
+            # Byte indices of the start of characters start_char and end_char.
+            # `SubString` treats these as character indices and includes the
+            # full character at `end_byte`, so multibyte tokens stay intact.
+            start_byte = nextind(token, 0, start_char)
+            end_byte = nextind(token, 0, end_char)
 
-            substr_view = SubString(token, start_byte, end_byte)
-
+            # First-piece probes hash a SubString (allocation-free). Continuation
+            # probes need the "##" prefix, which cannot be represented as a
+            # contiguous SubString, so the key is materialised.
             if start_char > 1
-                key = "##" * substr_view
+                key = "##" * SubString(token, start_byte, end_byte)
                 if haskey(vocab, key)
                     push!(output_tokens, key)
                     start_char = end_char + 1
@@ -156,8 +168,9 @@ function wordpiece_tokenize(token::String, vocab::Dict{String,Int}, unk_token::S
                     break
                 end
             else
-                if haskey(vocab, substr_view)
-                    push!(output_tokens, String(substr_view))
+                key = SubString(token, start_byte, end_byte)
+                if haskey(vocab, key)
+                    push!(output_tokens, String(key))
                     start_char = end_char + 1
                     found = true
                     break
@@ -242,12 +255,52 @@ function encode(tokenizer::WordPieceTokenizer, text::String;
     # Handle padding
     if max_length !== nothing && padding && length(ids) < max_length
         pad_id = get(tokenizer.vocab, tokenizer.pad_token, 0)
-        while length(ids) < max_length
-            push!(ids, pad_id)
-        end
+        append!(ids, fill(pad_id, max_length - length(ids)))
     end
 
     return ids
+end
+
+# ============================================================================
+# Truncation Strategies
+# ============================================================================
+
+"""
+    AbstractTruncation
+
+Supertype for truncation strategies accepted by [`encode_pair`](@ref):
+
+- [`LongestFirst`](@ref) (default): trim the longer sequence first.
+- [`OnlyFirst`](@ref): trim only the first sequence.
+- [`OnlySecond`](@ref): trim only the second sequence.
+
+Pass the *type* as the `truncation` keyword, e.g. `truncation=OnlySecond`.
+Passing a `Symbol` (`:longest_first`, `:only_first`, `:only_second`) is deprecated.
+"""
+abstract type AbstractTruncation end
+
+"""Truncation strategy: trim the longer sequence first."""
+struct LongestFirst <: AbstractTruncation end
+
+"""Truncation strategy: trim only the first sequence."""
+struct OnlyFirst <: AbstractTruncation end
+
+"""Truncation strategy: trim only the second sequence."""
+struct OnlySecond <: AbstractTruncation end
+
+const _TRUNCATION_FROM_SYMBOL = Dict(
+    :longest_first => LongestFirst,
+    :only_first    => OnlyFirst,
+    :only_second   => OnlySecond,
+)
+
+_resolve_truncation(::Type{T}) where {T<:AbstractTruncation} = T
+function _resolve_truncation(truncation::Symbol)
+    Base.depwarn(
+        "`truncation=$truncation` is deprecated; pass `LongestFirst`, `OnlyFirst`, or `OnlySecond`.",
+        :encode_pair)
+    haskey(_TRUNCATION_FROM_SYMBOL, truncation) && return _TRUNCATION_FROM_SYMBOL[truncation]
+    error("Unknown truncation strategy: $truncation. Use LongestFirst, OnlyFirst, or OnlySecond.")
 end
 
 """
@@ -257,7 +310,9 @@ Encode a sentence pair (e.g., for question answering or NLI tasks).
 
 # Keyword Arguments
 - `max_length::Union{Nothing,Int}=nothing`: Maximum total sequence length
-- `truncation::Symbol=:longest_first`: Truncation strategy (:longest_first, :only_first, :only_second)
+- `truncation`: `LongestFirst` (default), `OnlyFirst`, or `OnlySecond`.
+  Legacy `Symbol`s (`:longest_first`, `:only_first`, `:only_second`) still work
+  but are deprecated.
 - `padding::Bool=false`: Whether to pad to max_length
 
 # Returns
@@ -268,8 +323,9 @@ NamedTuple with:
 """
 function encode_pair(tokenizer::WordPieceTokenizer, text_a::String, text_b::String;
     max_length::Union{Nothing,Int}=nothing,
-    truncation::Symbol=:longest_first,
+    truncation=LongestFirst,
     padding::Bool=false)
+    t = _resolve_truncation(truncation)
     tokens_a = tokenize(tokenizer, text_a)
     tokens_b = tokenize(tokenizer, text_b)
 
@@ -282,26 +338,21 @@ function encode_pair(tokenizer::WordPieceTokenizer, text_a::String, text_b::Stri
         max_tokens = max_length - special_tokens_count
 
         if length(tokens_a) + length(tokens_b) > max_tokens
-            if truncation == :longest_first
-                excess = length(tokens_a) + length(tokens_b) - max_tokens
-                la, lb = length(tokens_a), length(tokens_b)
-                # Distribute cuts: remove from the longer sequence first
-                half = excess ÷ 2
-                if la >= lb
-                    cut_a = min(la - 1, half + (excess % 2))
-                    cut_b = excess - cut_a
-                else
-                    cut_b = min(lb - 1, half + (excess % 2))
-                    cut_a = excess - cut_b
+            excess = length(tokens_a) + length(tokens_b) - max_tokens
+            if t === LongestFirst
+                # HF `_truncate_seq_pair`: trim the longer sequence one token at
+                # a time until within budget (ties trim the second sequence).
+                while length(tokens_a) + length(tokens_b) > max_tokens
+                    if length(tokens_a) > length(tokens_b)
+                        tokens_a = tokens_a[1:end-1]
+                    else
+                        tokens_b = tokens_b[1:end-1]
+                    end
                 end
-                tokens_a = tokens_a[1:la-cut_a]
-                tokens_b = tokens_b[1:lb-cut_b]
-            elseif truncation == :only_first
-                excess = length(tokens_a) + length(tokens_b) - max_tokens
-                tokens_a = tokens_a[1:max(1, length(tokens_a) - excess)]
-            elseif truncation == :only_second
-                excess = length(tokens_a) + length(tokens_b) - max_tokens
-                tokens_b = tokens_b[1:max(1, length(tokens_b) - excess)]
+            elseif t === OnlyFirst
+                tokens_a = tokens_a[1:max(0, length(tokens_a) - excess)]
+            elseif t === OnlySecond
+                tokens_b = tokens_b[1:max(0, length(tokens_b) - excess)]
             end
         end
     end
@@ -349,11 +400,14 @@ Encode multiple texts into a batch matrix with padding and attention mask.
 """
 function encode_batch(tokenizer::WordPieceTokenizer, texts::Vector{String};
     max_length::Int=512, padding::Symbol=:longest)
+    padding in (:longest, :max_length) || throw(ArgumentError(
+        "padding must be :longest or :max_length, got :$padding"))
+
     # Encode all texts
     all_ids = [encode(tokenizer, t; max_length=max_length, truncation=true) for t in texts]
 
     # Determine target length based on padding strategy
-    max_actual_len = maximum(length.(all_ids))
+    max_actual_len = maximum(length, all_ids)
     target_len = if padding == :longest
         min(max_length, max_actual_len)
     else

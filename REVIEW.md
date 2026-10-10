@@ -386,16 +386,25 @@ Changes vs. today:
 
 ### Phase 2 — Tokenizer fidelity & performance
 
-- [ ] Add NFKD + accent-stripping when `do_lower_case=true` to match HF
-      `BertTokenizer` exactly (currently accented text silently diverges); add
-      parity fixtures for `"naïve café"`-style inputs.
-- [ ] Apply tokenizer allocation fixes (§3.4): `position(buffer)`, single
-      `append!` for padding, hoisted mask regex, `SubString`-based vocab probing.
-- [ ] Consider interning `"##"`-prefixed probes by pre-baking a
-      `Dict{SubString-ish}` … or simply benchmark: the O(n²) suffix scan dominates
-      for long unknown words; a sorted-vocab + binary search is a bigger win.
-- [ ] Multi-`[MASK]` support in `unmask` (currently first mask only) or an explicit
-      `Documenter`-documented limitation.
+- [x] Add NFKD + accent-stripping when `do_lower_case=true` to match HF
+      `BertTokenizer` exactly; parity fixtures added for `"café"`/`"naïve"`.
+- [x] Apply tokenizer allocation fixes (§3.4): `position(buffer)`, single
+      `append!` for padding, hoisted mask regex (Phase 0), `SubString`-based
+      first-piece vocab probing.
+- [~] Interning `"##"`-prefixed probes: attempted and reverted — the prefixed
+      key is not contiguous in a `"##"*token` buffer, so a `SubString` cannot
+      represent it. First-piece probes remain allocation-free; continuation
+      probes materialise the key. A second `Dict{String,String}` index of bare
+      suffixes would make continuation probes allocation-free if needed.
+- [x] Multi-`[MASK]` support documented as first-mask-only in the `unmask`
+      docstring.
+- [x] **Bonus bug fixes found while adding multi-byte fixtures:**
+      `wordpiece_tokenize` misused `thisind`/`lastindex` (byte APIs) with
+      character indices, corrupting non-ASCII tokens; `encode_pair` did not
+      enforce `max_length` for `only_first`/`only_second`/longest-first edge
+      cases. Both fixed with tests.
+- [x] Tokenizer `truncation` enums (`LongestFirst`/`OnlyFirst`/`OnlySecond`)
+      with `Base.depwarn` shim; `encode_batch` validates its padding strategy.
 
 ### Phase 3 — Test & packaging hardening (production release)
 

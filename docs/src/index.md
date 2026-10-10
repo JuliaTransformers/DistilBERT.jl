@@ -1,6 +1,21 @@
 # DistilBERT.jl
 
-A pure Julia implementation of the DistilBERT model.
+A pure Julia implementation of the DistilBERT model, built with Flux.jl.
+
+## Quick Start
+
+```julia
+using DistilBERT, Flux
+
+model = load_model("models/distilbert-base-uncased")   # dir or HF Hub ID
+tokenizer = WordPieceTokenizer("models/distilbert-base-uncased/vocab.txt")
+Flux.testmode!(model)                                  # disable dropout
+
+output = predict(model, tokenizer, "Hello world!")     # (dim, seq_len, 1)
+embedding = embed(model, tokenizer, "Hello world!"; pooling=MeanPooling)
+```
+
+Return values live on the same device as the model parameters.
 
 ## API Reference
 
@@ -31,6 +46,19 @@ encode_batch
 ```@docs
 predict
 embed
+unmask
+```
+
+### Pooling
+
+```@docs
+AbstractPooling
+CLSPooling
+MeanPooling
+MaxPooling
+cls_pooling
+mean_pooling
+max_pooling
 ```
 
 ### Task-Specific Heads
@@ -39,12 +67,25 @@ embed
 DistilBertForSequenceClassification
 DistilBertForTokenClassification
 DistilBertForQuestionAnswering
+DistilBertForMaskedLM
 ```
 
-### Pooling
+### Device & Precision
+
+CUDA support is provided by a package extension: load `CUDA.jl` to enable it.
+`to_gpu`/`to_cpu` move parameters, and `predict`/`embed` automatically follow
+the model's device.
 
 ```@docs
-cls_pooling
-mean_pooling
-max_pooling
+to_gpu
+to_cpu
+on_gpu
+cuda_inputs
+gpu_memory_info
+to_half
+to_bfloat16
+to_float32
+prepare_inputs
+num_parameters
+num_parameters_mib
 ```

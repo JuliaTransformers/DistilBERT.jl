@@ -1,6 +1,3 @@
-
-using Unicode
-
 export WordPieceTokenizer, tokenize, encode, encode_pair, encode_batch, load_vocab
 export AbstractTruncation, LongestFirst, OnlyFirst, OnlySecond
 

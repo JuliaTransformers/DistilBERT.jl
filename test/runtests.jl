@@ -14,6 +14,34 @@ catch err
     false
 end
 
+"""Build a HuggingFace-shaped state dict (batch-first weights) for load_weights! tests."""
+function make_base_state(config::DistilBertConfig; prefix::String="distilbert.")
+    D, H = config.dim, config.hidden_dim
+    sd = Dict{String,Any}()
+    sd["$(prefix)embeddings.word_embeddings.weight"] =
+        randn(Float32, config.vocab_size, D)
+    sd["$(prefix)embeddings.position_embeddings.weight"] =
+        randn(Float32, config.max_position_embeddings, D)
+    sd["$(prefix)embeddings.LayerNorm.weight"] = ones(Float32, D)
+    sd["$(prefix)embeddings.LayerNorm.bias"] = zeros(Float32, D)
+    for i in 0:(config.n_layers - 1)
+        p = "$(prefix)transformer.layer.$i"
+        for name in ("attention.q_lin", "attention.k_lin", "attention.v_lin", "attention.out_lin")
+            sd["$p.$name.weight"] = randn(Float32, D, D)
+            sd["$p.$name.bias"] = zeros(Float32, D)
+        end
+        sd["$p.sa_layer_norm.weight"] = ones(Float32, D)
+        sd["$p.sa_layer_norm.bias"] = zeros(Float32, D)
+        sd["$p.ffn.lin1.weight"] = randn(Float32, H, D)
+        sd["$p.ffn.lin1.bias"] = zeros(Float32, H)
+        sd["$p.ffn.lin2.weight"] = randn(Float32, D, H)
+        sd["$p.ffn.lin2.bias"] = zeros(Float32, D)
+        sd["$p.output_layer_norm.weight"] = ones(Float32, D)
+        sd["$p.output_layer_norm.bias"] = zeros(Float32, D)
+    end
+    return sd
+end
+
 @testset "DistilBERT.jl" begin
     @testset "Config" begin
         config = DistilBertConfig()
@@ -551,6 +579,87 @@ end
             max_length=1, truncation=true)
         @test length(ids) == 1
         @test ids[1] == tok.vocab["[SEP]"]
+
+        rm(dir; recursive=true)
+    end
+
+    @testset "Weight loading (synthetic state dicts)" begin
+        config = DistilBertConfig(dim=64, n_heads=4, hidden_dim=256, n_layers=2, vocab_size=100)
+        sd = make_base_state(config)
+
+        # Base model: word embeddings are (vocab, dim) in HF layout and must be
+        # transposed; Dense weights are (out, in) in both layouts.
+        base = DistilBertModel(config)
+        DistilBERT.load_weights!(base, sd)
+        @test base.embeddings.word_embeddings.weight ==
+              permutedims(sd["distilbert.embeddings.word_embeddings.weight"], (2, 1))
+        @test base.embeddings.position_embeddings.weight ==
+              permutedims(sd["distilbert.embeddings.position_embeddings.weight"], (2, 1))
+        @test base.transformer[1].attention.q_lin.weight ==
+              sd["distilbert.transformer.layer.0.attention.q_lin.weight"]
+        @test base.transformer[2].ffn.lin1.weight ==
+              sd["distilbert.transformer.layer.1.ffn.lin1.weight"]
+
+        # Sequence classification head
+        seq_sd = copy(sd)
+        seq_sd["pre_classifier.weight"] = randn(Float32, 64, 64)
+        seq_sd["pre_classifier.bias"] = zeros(Float32, 64)
+        seq_sd["classifier.weight"] = randn(Float32, 3, 64)
+        seq_sd["classifier.bias"] = zeros(Float32, 3)
+        seq = DistilBertForSequenceClassification(config, 3)
+        DistilBERT.load_weights!(seq, seq_sd)
+        @test seq.classifier.weight == seq_sd["classifier.weight"]
+        @test seq.pre_classifier.bias == seq_sd["pre_classifier.bias"]
+
+        # Token classification head
+        tok_sd = copy(sd)
+        tok_sd["classifier.weight"] = randn(Float32, 5, 64)
+        tok_sd["classifier.bias"] = zeros(Float32, 5)
+        tok = DistilBertForTokenClassification(config, 5)
+        DistilBERT.load_weights!(tok, tok_sd)
+        @test tok.classifier.weight == tok_sd["classifier.weight"]
+
+        # Question answering head
+        qa_sd = copy(sd)
+        qa_sd["qa_outputs.weight"] = randn(Float32, 2, 64)
+        qa_sd["qa_outputs.bias"] = zeros(Float32, 2)
+        qa = DistilBertForQuestionAnswering(config)
+        DistilBERT.load_weights!(qa, qa_sd)
+        @test qa.qa_outputs.weight == qa_sd["qa_outputs.weight"]
+
+        # MaskedLM head (tied projection + bias)
+        mlm_sd = copy(sd)
+        mlm_sd["vocab_transform.weight"] = randn(Float32, 64, 64)
+        mlm_sd["vocab_transform.bias"] = zeros(Float32, 64)
+        mlm_sd["vocab_layer_norm.weight"] = ones(Float32, 64)
+        mlm_sd["vocab_layer_norm.bias"] = zeros(Float32, 64)
+        mlm_sd["vocab_projector.bias"] = randn(Float32, 100)
+        mlm = DistilBertForMaskedLM(config)
+        DistilBERT.load_weights!(mlm, mlm_sd)
+        @test mlm.vocab_transform.weight == mlm_sd["vocab_transform.weight"]
+        @test mlm.vocab_projector_bias == mlm_sd["vocab_projector.bias"]
+    end
+
+    @testset "load_model dispatch (init_random)" begin
+        dir = mktempdir()
+        open(joinpath(dir, "config.json"), "w") do f
+            print(f, """{"dim": 64, "n_heads": 4, "hidden_dim": 256, "n_layers": 1, "vocab_size": 100}""")
+        end
+
+        @test load_model(dir; init_random=true) isa DistilBertModel
+        @test load_model(DistilBertForSequenceClassification, dir;
+            num_labels=3, init_random=true) isa DistilBertForSequenceClassification
+        @test load_model(DistilBertForTokenClassification, dir;
+            num_labels=5, init_random=true) isa DistilBertForTokenClassification
+        @test load_model(DistilBertForQuestionAnswering, dir;
+            init_random=true) isa DistilBertForQuestionAnswering
+        @test load_model(DistilBertForMaskedLM, dir;
+            init_random=true) isa DistilBertForMaskedLM
+
+        # Missing config.json is a clear error (local, no TransformersDownloads)
+        if !DistilBERT._td_available()
+            @test_throws ErrorException load_model(mktempdir(); init_random=true)
+        end
 
         rm(dir; recursive=true)
     end

@@ -27,36 +27,32 @@ model = load_model("distilbert-base-uncased")
 model = load_model(DistilBertForSequenceClassification, "distilbert-base-uncased"; num_labels=2)
 ```
 """
-function load_model(source::String; init_random::Bool=false)
+function load_model(source::String; kwargs...)
+    return load_model(DistilBertModel, source; kwargs...)
+end
+
+function load_model(::Type{T}, source::String; init_random::Bool=false, kwargs...) where {T}
     config, state_dict = _load_config_and_weights(source; init_random)
-    model = DistilBertModel(config)
+    model = _build_model(T, config; kwargs...)
     state_dict !== nothing && load_weights!(model, state_dict)
     return model
 end
 
-function load_model(::Type{DistilBertForSequenceClassification}, source::String;
-    num_labels::Int=2, init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(source; init_random)
-    model = DistilBertForSequenceClassification(config, num_labels)
-    state_dict !== nothing && load_weights!(model, state_dict)
-    return model
-end
+# Model-specific construction; typo'd keywords surface as MethodErrors.
+_build_model(::Type{DistilBertModel}, config::DistilBertConfig) =
+    DistilBertModel(config)
 
-function load_model(::Type{DistilBertForTokenClassification}, source::String;
-    num_labels::Int, init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(source; init_random)
-    model = DistilBertForTokenClassification(config, num_labels)
-    state_dict !== nothing && load_weights!(model, state_dict)
-    return model
-end
+_build_model(::Type{DistilBertForSequenceClassification}, config::DistilBertConfig; num_labels::Int=2) =
+    DistilBertForSequenceClassification(config, num_labels)
 
-function load_model(::Type{DistilBertForQuestionAnswering}, source::String;
-    init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(source; init_random)
-    model = DistilBertForQuestionAnswering(config)
-    state_dict !== nothing && load_weights!(model, state_dict)
-    return model
-end
+_build_model(::Type{DistilBertForTokenClassification}, config::DistilBertConfig; num_labels::Int) =
+    DistilBertForTokenClassification(config, num_labels)
+
+_build_model(::Type{DistilBertForQuestionAnswering}, config::DistilBertConfig) =
+    DistilBertForQuestionAnswering(config)
+
+_build_model(::Type{DistilBertForMaskedLM}, config::DistilBertConfig) =
+    DistilBertForMaskedLM(config)
 
 # ============================================================================
 # Internal: Config & Weight Loading
@@ -70,7 +66,7 @@ end
 Convert a raw config dictionary (from JSON) to a `DistilBertConfig`.
 Isolated here so both the local-path and HF-Hub code paths share the logic.
 """
-function _parse_distilbert_config(config_dict::Dict)
+function _parse_distilbert_config(config_dict::AbstractDict)
     DistilBertConfig(
         vocab_size             = get(config_dict, "vocab_size",             30522),
         dim                    = get(config_dict, "dim",                    768),
@@ -308,18 +304,6 @@ function load_weights!(model::DistilBertForQuestionAnswering, state_dict)
     load_dense!(model.qa_outputs, "qa_outputs", state_dict, used_keys, "")
 
     _report_unused_keys(state_dict, used_keys)
-end
-
-function load_model(::Type{DistilBertForMaskedLM}, path::String;
-    init_random::Bool=false)
-    config, state_dict = _load_config_and_weights(path; init_random)
-    model = DistilBertForMaskedLM(config)
-
-    if state_dict !== nothing
-        load_weights!(model, state_dict)
-    end
-
-    return model
 end
 
 function load_weights!(model::DistilBertForMaskedLM, state_dict)

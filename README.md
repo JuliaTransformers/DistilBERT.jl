@@ -8,14 +8,19 @@ This project implements the DistilBERT architecture from scratch, featuring a cu
 
 - **Pure Julia**: No Python dependencies required for inference.
 - **High Performance**: Optimized attention mechanism using `NNlib.dot_product_attention`.
+- **Type-stable & inferable**: the forward pass is `@inferred` end-to-end.
 - **Hugging Face Compatible**:
-    - Loads weights directly from `model.safetensors`.
-    - Implements `WordPieceTokenizer` matching `BertTokenizer` logic.
+    - Loads weights directly from `model.safetensors` (SafeTensors > PyTorch `.bin`).
+    - Implements `WordPieceTokenizer` matching `BertTokenizer` logic, including
+      lowercasing and accent stripping.
 - **Task-Specific Heads**:
     - `DistilBertModel` (Base)
     - `DistilBertForSequenceClassification`
     - `DistilBertForTokenClassification`
     - `DistilBertForQuestionAnswering`
+    - `DistilBertForMaskedLM`
+- **GPU support** (CUDA package extension) with `to_gpu`, `to_half`, and
+  device-aware `predict`/`embed`.
 - **Verified Accuracy**: Validated against Python's `transformers` library with `< 1e-4` numerical difference.
 
 ## 📦 Installation
@@ -27,6 +32,10 @@ git clone https://github.com/StartYourStart/DistilBERT.jl.git
 cd DistilBERT.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
+
+> **Name collisions:** the package exports generic names (`encode`, `tokenize`,
+> `predict`, `embed`, `unmask`). In environments that also load other NLP
+> packages, qualify calls (e.g. `DistilBERT.encode(...)`) or import selectively.
 
 ## ⚡ Quick Start
 
@@ -58,14 +67,17 @@ Easily extract pooled embeddings for downstream tasks:
 
 ```julia
 # Get [CLS] token embedding
-cls_embedding = embed(model, tokenizer, text; pooling=:cls)
+cls_embedding = embed(model, tokenizer, text; pooling=CLSPooling)
 
 # Get Mean-pooled embedding
-mean_embedding = embed(model, tokenizer, text; pooling=:mean)
+mean_embedding = embed(model, tokenizer, text; pooling=MeanPooling)
 
 println("Embedding size: ", size(cls_embedding))
 # (dim,)
 ```
+
+Pooling strategies are `CLSPooling` (default), `MeanPooling`, and `MaxPooling`.
+Legacy `Symbol`s (`:cls`, `:mean`, `:max`) still work but are deprecated.
 
 ### 4. Batch Processing
 Efficiently process multiple sentences with automatic padding and masking:
@@ -78,11 +90,15 @@ texts = [
 ]
 
 # Get batch embeddings
-batch_embeddings = embed(model, tokenizer, texts; pooling=:mean)
+batch_embeddings = embed(model, tokenizer, texts; pooling=MeanPooling)
 
 println("Batch shape: ", size(batch_embeddings))
 # (dim, batch_size)
 ```
+
+Return values live on the same device as the model's parameters: CPU `Array`s
+for a CPU model, `CuArray`s after `to_gpu(model)`. Use `to_cpu(model)` (or
+`Array(output)`) to move results back.
 
 ## 📊 Benchmarks
 
@@ -121,13 +137,42 @@ julia --project=. benchmarks/validate_parity.jl big
 - A Python environment (`.venv`) with `torch` and `transformers` installed is required for running the comparison scripts.
 - To use MKL for best performance in Julia: `using MKL` (ensure it's in your project dependencies).
 
+## 🖥️ GPU Usage (CUDA)
+
+CUDA support is a package extension — load `CUDA.jl` and the methods appear:
+
+```julia
+using CUDA, DistilBERT, Flux
+
+model = load_model("distilbert-base-uncased")
+Flux.testmode!(model)
+
+model_gpu = to_gpu(model)            # move parameters to the GPU
+println(on_gpu(model_gpu))           # true
+
+# predict/embed move inputs to the model's device automatically
+output = predict(model_gpu, tokenizer, "Hello world!")   # CuArray
+embedding = embed(model_gpu, tokenizer, ["hi", "there"]; pooling=MeanPooling)
+
+model_cpu = to_cpu(model_gpu)        # move back
+model_f16 = to_half(to_gpu(model))   # Float16 (Tensor Cores)
+```
+
+`to_bfloat16` preserves the model's device (Ampere+ recommended for BF16).
+
 ## Project Structure
 
 - `src/DistilBERT.jl`: Main entry point and exports.
-- `src/config.jl`: Configuration struct.
+- `src/config.jl`: Validated configuration struct.
 - `src/layers.jl`: Transformer layers (Attention, FFN, Embeddings).
-- `src/models.jl`: Model definitions and task heads.
-- `src/loading.jl`: Weight loading logic.
+- `src/models.jl`: Model definitions and task heads (type-stable, NTuple blocks).
+- `src/loading.jl`: Weight loading logic (SafeTensors/Pickle, HF Hub via extension).
+- `src/inference.jl`: `predict`, `embed`, `unmask`, pooling strategies.
+- `src/performance.jl`: Device/precision utilities.
 - `src/tokenizer.jl`: WordPiece tokenizer implementation.
-- `benchmarks/`: Performance benchmarking scripts (`benchmark_julia.jl`, `benchmark_python.py`).
-- `models/`: Directory structure for storing downloaded model weights.
+- `ext/DistilBERTCUDAExt.jl`: CUDA device extension.
+- `ext/DistilBERTTDExt.jl`: TransformersDownloads (HF Hub) extension.
+- `benchmarks/`: Performance benchmarking scripts (`benchmark_julia.jl`, `validate_parity.jl`).
+- `validation/`: CPU/GPU parity harness against HuggingFace (requires Python).
+- `REVIEW.md`: Architecture audit and production-readiness roadmap.
+- `models/`: Directory structure for storing downloaded model weights (`config.json`, `vocab.txt`, `model.safetensors`).

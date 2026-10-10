@@ -409,26 +409,30 @@ Changes vs. today:
 ### Phase 3 — Test & packaging hardening (production release)
 
 - [x] Test coverage: gradients for **all four** task heads; `show` round-trips;
-      truncation/padding edge cases; empty-batch rejection. (Loading from
-      safetensors/pickle still untested — needs fixture files.)
+      truncation/padding edge cases; empty-batch rejection; **weight loading via
+      synthetic HF-layout state dicts** (base + all four heads) and `load_model`
+      dispatch against a real local `config.json`.
 - [x] Property-based tests: config validation matrix (`dim ÷ n_heads`, ranges);
       `@inferred` forward/head checks. (Random-mask analytic pooling test still
       open.)
 - [x] **Aqua.jl quality gates** (`test_all`, persistent_tasks disabled due to an
       upstream env bug): no ambiguities, no piracies, no stale deps, compat
       entries for all deps/extras, no undefined exports.
+- [x] **Bonus bug fixes found while adding loading tests:**
+      `_parse_distilbert_config(::Dict)` rejected `JSON.Object` returned by
+      JSON.jl 1.4+, so **all local-directory loading was broken**; signature now
+      accepts `AbstractDict`. Duplicated `load_model` methods collapsed into one
+      generic method + `_build_model` barriers.
 - [ ] Benchmark suite: `@benchmarkable` groups with `BenchmarkTools.jl` in a
       benchmark-specific environment; publish regression thresholds in CI
       (`--track-allocation=user` on the smoke test at minimum).
-- [ ] Documentation: Documenter pages for GPU usage, HF-hub loading, weight
-      loading contract (`used_keys`/`missing key` semantics), and the device
-      contract. Fix stale README (references `benchmark_python.py` which doesn't
-      exist; `models/` layout).
-- [ ] Decide export policy (§2.6): keep or namespace `encode`/`tokenize`/
-      `predict`/`embed`. At minimum document conflicts in README.
-- [ ] Git hygiene: `Manifest.toml` currently committed — standard practice for
-      libraries is to gitignore it; remove duplicated `using Unicode`
-      (`src/DistilBERT.jl:8` + `src/tokenizer.jl:2`).
+- [x] Documentation: README GPU/device-contract section, corrected pooling API
+      and stale benchmark references; docs pages cover pooling/MLM/device/precision
+      APIs. Export-collision note added to README.
+- [x] Decide export policy (§2.6): generic names kept for 0.1.0 compatibility;
+      collision risk documented in the README (namespacing is a 1.0 breaking change).
+- [ ] Git hygiene: `Manifest.toml` remains tracked (remove before release if the
+      project adopts the library convention). Duplicated `using Unicode` removed.
 
 ### Definition of done (production)
 

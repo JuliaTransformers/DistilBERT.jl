@@ -1,0 +1,52 @@
+name: Validation
+
+# Hermetic parity tests run in the regular CI workflow. This job additionally
+# regenerates the committed fixtures with the pinned Python environment and
+# fails if they drift, so the goldens keep tracking the installed
+# torch/transformers versions.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Mondays 06:00 UTC
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: Python parity fixtures (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+
+      - uses: julia-actions/cache@v3
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install pinned Python environment
+        run: |
+          uv venv --python 3.12 validation/fixtures/.venv
+          uv pip install --python validation/fixtures/.venv/bin/python \
+            --index-url https://download.pytorch.org/whl/cpu torch
+          uv pip install --python validation/fixtures/.venv/bin/python \
+            -r validation/fixtures/requirements.lock
+
+      - name: Regenerate fixtures and check for drift
+        run: |
+          validation/fixtures/.venv/bin/python validation/fixtures/generate.py
+          if ! git diff --exit-code -- test/fixtures; then
+            echo "::error::Committed parity fixtures are stale; regenerate locally with validation/fixtures/generate.py and commit the diff."
+            exit 1
+          fi
+
+      - name: Run Julia test suite (includes hermetic parity)
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'

@@ -4,11 +4,17 @@ export DistilBertModel, DistilBertForSequenceClassification, DistilBertForTokenC
     DistilBertModel
 
 The bare DistilBERT Model transformer outputting raw hidden-states without any specific head on top.
+
+# Fields
+- `config::DistilBertConfig`: Model configuration.
+- `embeddings::Embeddings`: Word/position embeddings and layer norm.
+- `transformer::NTuple{N,TransformerBlock}`: The encoder blocks. Storing them
+  in a tuple keeps the forward pass fully type-inferable (unlike a `Chain`).
 """
-struct DistilBertModel
+struct DistilBertModel{N,E,T<:NTuple{N,TransformerBlock}}
     config::DistilBertConfig
-    embeddings::Embeddings
-    transformer::Chain
+    embeddings::E
+    transformer::T
 end
 
 Flux.@layer DistilBertModel
@@ -21,15 +27,18 @@ function DistilBertModel(config::DistilBertConfig)
     return DistilBertModel(
         config,
         Embeddings(config),
-        Chain([TransformerBlock(config) for _ in 1:config.n_layers]...)
+        ntuple(_ -> TransformerBlock(config), config.n_layers)
     )
 end
 
 function (m::DistilBertModel)(input_ids::AbstractMatrix{<:Integer}; mask::Union{Nothing,AbstractMatrix}=nothing)
     x = m.embeddings(input_ids)
 
+    # Convert mask to NNlib format ONCE; all 6 blocks reuse the same array.
+    nnlib_mask = _make_nnlib_mask(mask)
+
     for block in m.transformer
-        x = block(x; mask=mask)
+        x = block(x; mask=nnlib_mask)
     end
 
     return x
@@ -44,11 +53,11 @@ end
 
 DistilBERT model with a classification head for sequence classification tasks.
 """
-struct DistilBertForSequenceClassification
-    distilbert::DistilBertModel
-    pre_classifier::Dense
-    classifier::Dense
-    dropout::Dropout
+struct DistilBertForSequenceClassification{M,P,C,D}
+    distilbert::M
+    pre_classifier::P
+    classifier::C
+    dropout::D
 end
 
 Flux.@layer DistilBertForSequenceClassification
@@ -73,7 +82,7 @@ end
 
 function (m::DistilBertForSequenceClassification)(input_ids::AbstractMatrix{<:Integer}; mask::Union{Nothing,AbstractMatrix}=nothing)
     hidden_states = m.distilbert(input_ids; mask=mask)
-    pooled_output = hidden_states[:, 1, :]  # CLS token: (dim, batch_size)
+    pooled_output = selectdim(hidden_states, 2, 1)  # CLS token view: (dim, batch_size)
     pooled_output = m.pre_classifier(pooled_output)
     pooled_output = m.dropout(pooled_output)
     logits = m.classifier(pooled_output)
@@ -85,10 +94,10 @@ end
 
 DistilBERT model with a token classification head (e.g., NER, POS tagging).
 """
-struct DistilBertForTokenClassification
-    distilbert::DistilBertModel
-    classifier::Dense
-    dropout::Dropout
+struct DistilBertForTokenClassification{M,C,D}
+    distilbert::M
+    classifier::C
+    dropout::D
 end
 
 Flux.@layer DistilBertForTokenClassification
@@ -122,9 +131,9 @@ end
 
 DistilBERT model with a span prediction head for extractive QA.
 """
-struct DistilBertForQuestionAnswering
-    distilbert::DistilBertModel
-    qa_outputs::Dense
+struct DistilBertForQuestionAnswering{M,Q}
+    distilbert::M
+    qa_outputs::Q
 end
 
 Flux.@layer DistilBertForQuestionAnswering
@@ -144,9 +153,8 @@ end
 function (m::DistilBertForQuestionAnswering)(input_ids::AbstractMatrix{<:Integer}; mask::Union{Nothing,AbstractMatrix}=nothing)
     hidden_states = m.distilbert(input_ids; mask=mask)  # (dim, seq_len, batch_size)
     logits = m.qa_outputs(hidden_states)  # (2, seq_len, batch_size)
-    start_logits = logits[1, :, :]  # (seq_len, batch_size)
-    end_logits = logits[2, :, :]    # (seq_len, batch_size)
-    return (start_logits=start_logits, end_logits=end_logits)
+    # Views alias `logits`; callers must copy before mutating.
+    return (start_logits=@view(logits[1, :, :]), end_logits=@view(logits[2, :, :]))
 end
 
 """
@@ -154,14 +162,14 @@ end
 
 DistilBERT model with a masked language modeling head on top.
 """
-struct DistilBertForMaskedLM
-    distilbert::DistilBertModel
-    vocab_transform::Dense       # dim → dim (with gelu activation)
-    vocab_layer_norm::LayerNorm  # dim
-    vocab_projector_bias::Vector{Float32}  # (vocab_size,)
+struct DistilBertForMaskedLM{M,T,L,B}
+    distilbert::M
+    vocab_transform::T        # dim → dim (with gelu activation)
+    vocab_layer_norm::L       # dim
+    vocab_projector_bias::B   # (vocab_size,)
 end
 
-Flux.@layer DistilBertForMaskedLM trainable = (distilbert, vocab_transform, vocab_layer_norm)
+Flux.@layer DistilBertForMaskedLM trainable = (distilbert, vocab_transform, vocab_layer_norm, vocab_projector_bias)
 
 """
     DistilBertForMaskedLM(config)

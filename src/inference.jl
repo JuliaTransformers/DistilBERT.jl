@@ -1,11 +1,14 @@
 export predict, embed, unmask
+export AbstractPooling, CLSPooling, MeanPooling, MaxPooling
+
+const MASK_PATTERN = r"\[MASK\]"i
 
 # ============================================================================
 # High-Level Inference API
 # ============================================================================
 
 """
-    predict(model, tokenizer, text) -> Matrix{Float32}
+    predict(model, tokenizer, text) -> AbstractArray{Float32,3}
 
 Run inference on a single text string.
 
@@ -18,7 +21,9 @@ Run inference on a single text string.
 - `text::String`: Input text
 
 # Returns
-- `output::Array{Float32,3}`: Hidden states of shape (dim, seq_len, 1)
+- `output::AbstractArray{Float32,3}`: Hidden states of shape (dim, seq_len, 1).
+  The output lives on the same device as the model parameters (CPU by default,
+  GPU when the model was moved with `to_gpu`).
 
 # Example
 ```julia
@@ -31,11 +36,12 @@ output = predict(model, tokenizer, "Hello world!")
 function predict(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String)
     input_ids = encode(tokenizer, text)
     input_matrix = reshape(input_ids, :, 1)
-    return model(input_matrix)
+    ref = model.embeddings.word_embeddings.weight
+    return model(_to_device(input_matrix, ref))
 end
 
 """
-    predict(model, tokenizer, texts; max_length=512) -> Matrix{Float32}
+    predict(model, tokenizer, texts; max_length=512) -> AbstractArray{Float32,3}
 
 Run batch inference on multiple texts with automatic padding and masking.
 
@@ -48,7 +54,8 @@ Run batch inference on multiple texts with automatic padding and masking.
 - `max_length::Int`: Maximum sequence length (default: 512)
 
 # Returns
-- `output::Array{Float32,3}`: Hidden states of shape (dim, seq_len, batch_size)
+- `output::AbstractArray{Float32,3}`: Hidden states of shape (dim, seq_len, batch_size),
+  on the same device as the model parameters.
 
 # Example
 ```julia
@@ -61,7 +68,10 @@ output = predict(model, tokenizer, ["Hello world!", "How are you?"])
 function predict(model::DistilBertModel, tokenizer::WordPieceTokenizer,
     texts::Vector{String}; max_length::Int=512)
     input_ids, attention_mask = encode_batch(tokenizer, texts; max_length=max_length)
-    return model(input_ids; mask=attention_mask)
+    ref = model.embeddings.word_embeddings.weight
+    ids = _to_device(input_ids, ref)
+    mask = _to_device(attention_mask, ref)
+    return model(ids; mask=mask)
 end
 
 
@@ -125,12 +135,56 @@ Compute max of token embeddings, excluding padding tokens.
 - `Matrix{Float32}`: Shape (dim, batch_size)
 """
 function max_pooling(output::AbstractArray{<:Real,3}, attention_mask::AbstractMatrix{<:Real})
-    # Set padding positions to very negative values so they don't affect max
+    # Set padding positions to a very negative value so they don't affect max
     mask_expanded = reshape(attention_mask, 1, size(attention_mask)...)
-    masked_output = output .* mask_expanded .+ (1.0f0 .- mask_expanded) .* -1.0f9
+    neg = convert(eltype(output), -1f9)
+    masked_output = ifelse.(mask_expanded .!= 0, output, neg)
 
     return dropdims(maximum(masked_output, dims=2), dims=2)
 end
+
+
+# ============================================================================
+# Pooling Strategies
+# ============================================================================
+
+"""
+    AbstractPooling
+
+Supertype for pooling strategies accepted by [`embed`](@ref):
+
+- [`CLSPooling`](@ref): take the `[CLS]` token representation.
+- [`MeanPooling`](@ref): mean over non-padding tokens.
+- [`MaxPooling`](@ref): elementwise max over non-padding tokens.
+
+Pass the *type* as the `pooling` keyword, e.g. `pooling=MeanPooling`.
+Passing a `Symbol` (`:cls`, `:mean`, `:max`) is deprecated.
+"""
+abstract type AbstractPooling end
+
+"""Pooling strategy: take the `[CLS]` token representation."""
+struct CLSPooling <: AbstractPooling end
+
+"""Pooling strategy: mean over non-padding tokens."""
+struct MeanPooling <: AbstractPooling end
+
+"""Pooling strategy: elementwise max over non-padding tokens."""
+struct MaxPooling <: AbstractPooling end
+
+const _POOLING_FROM_SYMBOL = Dict(:cls => CLSPooling, :mean => MeanPooling, :max => MaxPooling)
+
+_resolve_pooling(::Type{P}) where {P<:AbstractPooling} = P
+function _resolve_pooling(pooling::Symbol)
+    Base.depwarn(
+        "`pooling=$pooling` is deprecated; pass `CLSPooling`, `MeanPooling`, or `MaxPooling`.",
+        :embed)
+    haskey(_POOLING_FROM_SYMBOL, pooling) && return _POOLING_FROM_SYMBOL[pooling]
+    error("Unknown pooling strategy: $pooling. Use CLSPooling, MeanPooling, or MaxPooling.")
+end
+
+_pool(output, mask, ::Type{CLSPooling})  = cls_pooling(output)
+_pool(output, mask, ::Type{MeanPooling}) = mean_pooling(output, mask)
+_pool(output, mask, ::Type{MaxPooling})  = max_pooling(output, mask)
 
 
 # ============================================================================
@@ -138,7 +192,7 @@ end
 # ============================================================================
 
 """
-    embed(model, tokenizer, text; pooling=:cls) -> Vector{Float32}
+    embed(model, tokenizer, text; pooling=:cls) -> AbstractVector{Float32}
 
 Get sentence embedding for a single text.
 
@@ -146,30 +200,35 @@ Get sentence embedding for a single text.
 - `model::DistilBertModel`: The DistilBERT model
 - `tokenizer::WordPieceTokenizer`: The tokenizer
 - `text::String`: Input text
-- `pooling::Symbol`: Pooling strategy - `:cls`, `:mean`, or `:max` (default: `:cls`)
+- `pooling`: Pooling strategy - `CLSPooling` (default), `MeanPooling`, or
+  `MaxPooling`. Legacy `Symbol`s (`:cls`, `:mean`, `:max`) still work but are
+  deprecated.
 
 # Returns
-- `Vector{Float32}`: Sentence embedding of shape (dim,)
+- `AbstractVector{Float32}`: Sentence embedding of shape (dim,), on the same
+  device as the model parameters.
+
+# Example
+```julia
+model = load_model("path/to/model")
+tokenizer = WordPieceTokenizer("path/to/vocab.txt")
+Flux.testmode!(model)
+embedding = embed(model, tokenizer, "Hello world!"; pooling=MeanPooling)
+```
 """
-function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String; pooling::Symbol=:cls)
+function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, text::String;
+    pooling=CLSPooling)
+    p = _resolve_pooling(pooling)
     output = predict(model, tokenizer, text)
 
-    if pooling == :cls
-        return vec(cls_pooling(output))
-    elseif pooling == :mean
-        # For single text, all tokens are valid
-        mask = ones(Float32, size(output, 2), 1)
-        return vec(mean_pooling(output, mask))
-    elseif pooling == :max
-        mask = ones(Float32, size(output, 2), 1)
-        return vec(max_pooling(output, mask))
-    else
-        error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
-    end
+    p === CLSPooling && return vec(cls_pooling(output))
+    # For single text, all tokens are valid
+    mask = _to_device(ones(Float32, size(output, 2), 1), output)
+    return vec(_pool(output, mask, p))
 end
 
 """
-    embed(model, tokenizer, texts; pooling=:cls, max_length=512) -> Matrix{Float32}
+    embed(model, tokenizer, texts; pooling=:cls, max_length=512) -> AbstractArray{Float32,2}
 
 Get sentence embeddings for multiple texts.
 
@@ -177,26 +236,33 @@ Get sentence embeddings for multiple texts.
 - `model::DistilBertModel`: The DistilBERT model
 - `tokenizer::WordPieceTokenizer`: The tokenizer
 - `texts::Vector{String}`: Input texts
-- `pooling::Symbol`: Pooling strategy - `:cls`, `:mean`, or `:max` (default: `:cls`)
+- `pooling`: Pooling strategy - `CLSPooling` (default), `MeanPooling`, or
+  `MaxPooling`. Legacy `Symbol`s (`:cls`, `:mean`, `:max`) still work but are
+  deprecated.
 - `max_length::Int`: Maximum sequence length (default: 512)
 
 # Returns
-- `Matrix{Float32}`: Sentence embeddings of shape (dim, batch_size)
+- `AbstractArray{Float32,2}`: Sentence embeddings of shape (dim, batch_size),
+  on the same device as the model parameters.
+
+# Example
+```julia
+model = load_model("path/to/model")
+tokenizer = WordPieceTokenizer("path/to/vocab.txt")
+Flux.testmode!(model)
+embeddings = embed(model, tokenizer, texts; pooling=MeanPooling)
+```
 """
 function embed(model::DistilBertModel, tokenizer::WordPieceTokenizer, texts::Vector{String};
-    pooling::Symbol=:cls, max_length::Int=512)
+    pooling=CLSPooling, max_length::Int=512)
+    p = _resolve_pooling(pooling)
     input_ids, attention_mask = encode_batch(tokenizer, texts; max_length=max_length)
-    output = model(input_ids; mask=attention_mask)
+    ref = model.embeddings.word_embeddings.weight
+    ids = _to_device(input_ids, ref)
+    mask = _to_device(attention_mask, ref)
+    output = model(ids; mask=mask)
 
-    if pooling == :cls
-        return cls_pooling(output)
-    elseif pooling == :mean
-        return mean_pooling(output, attention_mask)
-    elseif pooling == :max
-        return max_pooling(output, attention_mask)
-    else
-        error("Unknown pooling strategy: $pooling. Use :cls, :mean, or :max")
-    end
+    return _pool(output, mask, p)
 end
 
 
@@ -205,6 +271,10 @@ end
 
 Predict the masked token(s) in a text, similar to HuggingFace's `pipeline('fill-mask')`.
 Alias for the fill-mask pipeline.
+
+!!! note
+    Only the **first** `[MASK]` position is predicted. Split multi-mask texts
+    into one `unmask` call per mask if you need all predictions.
 
 > **Note:** Call `Flux.testmode!(model)` before inference to disable dropout.
 
@@ -243,8 +313,7 @@ function unmask(model::DistilBertForMaskedLM, tokenizer::WordPieceTokenizer, tex
     sep_id = tokenizer.vocab[tokenizer.sep_token]
 
     # Split text on [MASK] (case-insensitive)
-    mask_pattern = r"\[MASK\]"i
-    segments = split(text, mask_pattern)
+    segments = split(text, MASK_PATTERN)
 
     if length(segments) < 2
         error("No [MASK] token found in input text. Use [MASK] to indicate the token to predict.")

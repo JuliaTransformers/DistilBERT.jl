@@ -1,6 +1,9 @@
 [deps]
-Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 DistilBERT = "4a3a1c16-5378-477a-8c70-c7b46c0a0f4d"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+
+[sources]
+DistilBERT = {path = ".."}
 
 [compat]
 Documenter = "1"

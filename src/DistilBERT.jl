@@ -6,6 +6,7 @@ using JSON
 using Pickle
 using SafeTensors
 using Unicode
+using GPUArraysCore
 
 # core components
 include("config.jl")
@@ -14,5 +15,6 @@ include("models.jl")
 include("tokenizer.jl")
 include("loading.jl")
 include("inference.jl")
+include("performance.jl")
 
 end # module DistilBERT

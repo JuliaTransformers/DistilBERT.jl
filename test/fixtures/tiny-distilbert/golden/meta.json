@@ -1,0 +1,26 @@
+{
+  "seed": 1234,
+  "max_length": 32,
+  "vocab_size": 31,
+  "numeric_texts": [
+    "Hello, world!",
+    "DistilBERT is amazing.",
+    "Testing 你好 cafe naïve unfriendly"
+  ],
+  "tokenizer_texts": [
+    "Hello, world!",
+    "  DistilBERT   is amazing.  ",
+    "café naïve",
+    "你好世界",
+    "unfriendly testing!"
+  ],
+  "pair": [
+    "Hello, world!",
+    "DistilBERT is amazing."
+  ],
+  "torch": "2.14.1+cpu",
+  "transformers": "4.57.6",
+  "numpy": "2.5.3",
+  "python": "3.12.13",
+  "note": "Regenerate with validation/fixtures/generate.py; commit and review the diff."
+}

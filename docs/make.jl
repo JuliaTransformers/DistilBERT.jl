@@ -3,6 +3,7 @@ using Documenter, DistilBERT
 makedocs(
     modules=[DistilBERT],
     sitename="DistilBERT.jl",
+    checkdocs=:exports,
     format=Documenter.HTML(
         prettyurls=get(ENV, "CI", nothing) == "true",
     ),
@@ -12,5 +13,5 @@ makedocs(
 )
 
 deploydocs(
-    repo="github.com/AbrJA/DistilBERT.jl.git",
+    repo="github.com/JuliaTransformers/DistilBERT.jl.git",
 )

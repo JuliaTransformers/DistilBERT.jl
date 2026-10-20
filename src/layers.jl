@@ -1,8 +1,8 @@
-struct Embeddings
-    word_embeddings::Embedding
-    position_embeddings::Embedding
-    layer_norm::LayerNorm
-    dropout::Dropout
+struct Embeddings{WE,PE,LN,D}
+    word_embeddings::WE
+    position_embeddings::PE
+    layer_norm::LN
+    dropout::D
 end
 
 Flux.@layer Embeddings
@@ -19,29 +19,25 @@ end
 function (m::Embeddings)(input_ids::AbstractMatrix{<:Integer})
     seq_length = size(input_ids, 1)
 
-    words_embeddings = m.word_embeddings(input_ids) # (dim, seq_len, batch_size)
+    words_embeddings = m.word_embeddings(input_ids)           # (dim, seq_len, batch_size)
+    # Position ids follow the word-embedding weights' device (GPU-safe gather)
+    position_ids = _to_device(1:seq_length, m.position_embeddings.weight)
+    position_embeddings = m.position_embeddings(position_ids) # (dim, seq_len)
 
-    # Position embeddings: (dim, seq_len) -> broadcast to (dim, seq_len, batch_size)
-    # We use 1:seq_length for Julia indices
-    pos_ids = 1:seq_length
-    position_embeddings = m.position_embeddings(pos_ids) # (dim, seq_len)
-
-    embeddings = words_embeddings .+ position_embeddings
-    embeddings = m.layer_norm(embeddings)
-    embeddings = m.dropout(embeddings)
-
-    return embeddings
+    # Broadcasting adds position_embeddings over the batch dimension
+    embeddings = m.layer_norm(words_embeddings .+ position_embeddings)
+    return m.dropout(embeddings)
 end
 
-struct MultiHeadSelfAttention
+struct MultiHeadSelfAttention{Q,K,V,O,D}
     n_heads::Int
     dim::Int
     head_dim::Int
-    q_lin::Dense
-    k_lin::Dense
-    v_lin::Dense
-    out_lin::Dense
-    dropout::Dropout
+    q_lin::Q
+    k_lin::K
+    v_lin::V
+    out_lin::O
+    dropout::D
 end
 
 Flux.@layer MultiHeadSelfAttention trainable = (q_lin, k_lin, v_lin, out_lin)
@@ -60,37 +56,51 @@ function MultiHeadSelfAttention(config::DistilBertConfig)
     )
 end
 
-function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3}; mask::Union{Nothing,AbstractMatrix}=nothing)
-    # x shape: (dim, seq_len, batch_size)
+# ---------------------------------------------------------------------------
+# mask is pre-converted by the model's forward pass via `_make_nnlib_mask`
+# so each block receives a ready-to-use Bool array (or nothing).
+# ---------------------------------------------------------------------------
 
+"""
+    _make_nnlib_mask(mask) -> Union{Nothing, AbstractArray{Bool,4}}
+
+Convert a `(seq_len, batch_size)` attention mask to the 4-D Bool array
+format expected by `NNlib.dot_product_attention`:
+  `(kv_len, 1, 1, batch_size)` where `true` means *keep* (not masked).
+
+Calling this once per forward pass and sharing the result across all
+transformer blocks avoids N×reshape + comparison allocations.
+"""
+_make_nnlib_mask(::Nothing) = nothing
+function _make_nnlib_mask(mask::AbstractMatrix{<:Real})
+    # reshape is zero-copy; materialise the Bool comparison once
+    return reshape(mask .!= 0, size(mask, 1), 1, 1, size(mask, 2))
+end
+# Accept already-converted masks (idempotent, enables re-use)
+_make_nnlib_mask(mask::AbstractArray{Bool,4}) = mask
+
+function (m::MultiHeadSelfAttention)(x::AbstractArray{<:Real,3};
+    mask::Union{Nothing,AbstractArray}=nothing)
+    # x: (dim, seq_len, batch_size)
+    # mask is expected to already be in NNlib 4-D Bool format
+    # (converted once by `DistilBertModel` before the block loop)
     q = m.q_lin(x)
     k = m.k_lin(x)
     v = m.v_lin(x)
 
-    # Perform dot product attention using NNlib
-    mask_nnlib = if isnothing(mask)
-        nothing
-    else
-        reshape(mask, size(mask, 1), 1, 1, size(mask, 2)) .== 1
-    end
-
-    # Apply attention
-    # fdrop is applied to attention weights after softmax
-    context, attn_weights = dot_product_attention(q, k, v;
+    # NNlib dispatches to cuDNN fused attention on CUDA when available
+    context, _ = dot_product_attention(q, k, v;
         nheads=m.n_heads,
-        mask=mask_nnlib,
+        mask=mask,
         fdrop=m.dropout)
 
-    # context is (dim, seq_len, batch_size)
-
-    output = m.out_lin(context)
-    return output
+    return m.out_lin(context)
 end
 
-struct FeedForward
-    lin1::Dense
-    lin2::Dense
-    dropout::Dropout
+struct FeedForward{L1,L2,D}
+    lin1::L1
+    lin2::L2
+    dropout::D
 end
 
 Flux.@layer FeedForward
@@ -108,11 +118,11 @@ function (m::FeedForward)(x::AbstractArray{<:Real,3})
 end
 
 
-struct TransformerBlock
-    attention::MultiHeadSelfAttention
-    sa_layer_norm::LayerNorm
-    ffn::FeedForward
-    output_layer_norm::LayerNorm
+struct TransformerBlock{A,SN,F,ON}
+    attention::A
+    sa_layer_norm::SN
+    ffn::F
+    output_layer_norm::ON
 end
 
 Flux.@layer TransformerBlock
@@ -126,14 +136,12 @@ function TransformerBlock(config::DistilBertConfig)
     )
 end
 
-function (m::TransformerBlock)(x::AbstractArray{<:Real,3}; mask::Union{Nothing,AbstractMatrix}=nothing)
-    # Self-Attention
-    sa_output = m.attention(x; mask=mask)
-    sa_output = m.sa_layer_norm(sa_output .+ x)
+function (m::TransformerBlock)(x::AbstractArray{<:Real,3};
+    mask::Union{Nothing,AbstractArray}=nothing)
+    # mask is already in NNlib 4-D Bool format; pass through unchanged
+    sa_output = m.attention(x; mask)
+    sa_output = m.sa_layer_norm(sa_output .+ x)   # pre-norm residual
 
-    # Feed Forward
     ffn_output = m.ffn(sa_output)
-    output = m.output_layer_norm(ffn_output .+ sa_output)
-
-    return output
+    return m.output_layer_norm(ffn_output .+ sa_output)
 end

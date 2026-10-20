@@ -4,6 +4,8 @@ on:
     branches: [main, master]
     tags: ["*"]
   pull_request:
+permissions:
+  contents: read
 jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
@@ -13,7 +15,7 @@ jobs:
       matrix:
         version:
           - '1' # automatically expands to the latest stable 1.x release of Julia
-          - '1.10'
+          - '1.12'
           - 'pre'
         os:
           - ubuntu-latest
@@ -41,6 +43,10 @@ jobs:
   docs:
     name: Documentation
     runs-on: ubuntu-latest
+    # Required so `GITHUB_TOKEN` (used when DOCUMENTER_KEY is unset) may push
+    # to the gh-pages branch.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/julia-buildpkg@latest

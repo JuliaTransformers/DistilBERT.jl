@@ -1,7 +1,7 @@
 name = "DistilBERT"
 uuid = "4a3a1c16-5378-477a-8c70-c7b46c0a0f4d"
-authors = ["AbrJA <abraham.jaimes.mx@gmail.com>"]
 version = "0.2.0"
+authors = ["AbrJA <abraham.jaimes.mx@gmail.com>"]
 
 [deps]
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
@@ -13,8 +13,6 @@ SafeTensors = "eeda0dda-7046-4914-a807-2495fc7abb89"
 Unicode = "4ec0a83e-493e-50e2-b9ac-8f72acf5a8f5"
 
 [weakdeps]
-# TransformersDownloads is optional: enables HuggingFace Hub loading + caching.
-# Activate with: Pkg.develop(path="../TransformersDownloads.jl"); using TransformersDownloads
 TransformersDownloads = "83ccf3dd-bfab-49d6-97f1-f49acc47b240"
 
 [extensions]
@@ -23,7 +21,7 @@ DistilBERTTDExt = "TransformersDownloads"
 [compat]
 Aqua = "0.8"
 CUDA = "^5"
-Flux = "^0.14"
+Flux = "^0.14, 0.16"
 GPUArraysCore = "0.2"
 JSON = "^1"
 NNlib = "^0.9"
@@ -37,9 +35,6 @@ julia = "1.12"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
-# CUDA is test-only: it exercises the generic GPU path (to_gpu, device-aware
-# predict/embed, bf16) on CUDA-capable machines. The package has no
-# CUDA-specific code and no CUDA extension.
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 NPZ = "15e1cf62-19b3-5cfa-8e77-841668bca605"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
